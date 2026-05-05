@@ -5,6 +5,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _detect_carla_folder():
+    """Detect the default CARLA installation folder used by the legacy helpers."""
     candidates = (
         PROJECT_ROOT / "carla" / "CARLA_0.9.15",
         PROJECT_ROOT / "carla" / "CARLA_0.9.13",

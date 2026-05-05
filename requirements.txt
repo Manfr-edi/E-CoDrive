@@ -7,5 +7,6 @@ setuptools
 streamlit==1.40.1
 streamlit-folium==0.22.1
 streamlit_autorefresh==1.0.1
+matplotlib
+seaborn
 traci==1.26.0
-

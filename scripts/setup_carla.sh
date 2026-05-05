@@ -24,6 +24,8 @@ What it does:
   - downloads the UT Lexus CARLA asset archive into `Import/` when needed
   - runs `./ImportAssets.sh` when asset archives are present in `Import/`
   - removes imported `*.tar.gz` asset archives from `Import/` after a successful import
+  - when `CARLA 0.9.13` is part of the setup, builds/starts the
+    `autoware_mini` Docker container if Docker Compose is available
 
 Notes:
   - `custom_<Town>.sumocfg` files are not required beforehand; the dashboard generates them.
@@ -31,6 +33,9 @@ Notes:
   - if `<CARLA_DIR>` is omitted, the script auto-detects `carla/CARLA_*`
     installations first, then the legacy root-level `CARLA_0.9.13` /
     `CARLA_0.9.15` folders inside this repository.
+  - shell environment variables such as `SUMO_HOME` and `CARLA_PYTHON*`
+    are not persisted by this script; set them manually only when your
+    local runtime does not match the documented defaults.
 EOF
 }
 
@@ -41,6 +46,11 @@ die() {
 
 info() {
     echo "[setup_carla] $*"
+}
+
+run_cmd() {
+    info "Running: $*"
+    "$@"
 }
 
 require_dir() {
@@ -329,6 +339,82 @@ import_carla_assets() {
     fi
 }
 
+autoware_compose_cmd=()
+
+resolve_autoware_compose_command() {
+    if command -v docker >/dev/null 2>&1; then
+        if docker compose version >/dev/null 2>&1; then
+            autoware_compose_cmd=(docker compose)
+            return 0
+        fi
+    fi
+
+    if command -v docker-compose >/dev/null 2>&1; then
+        autoware_compose_cmd=(docker-compose)
+        return 0
+    fi
+
+    return 1
+}
+
+setup_autoware_docker() {
+    local compose_dir="$REPO_ROOT/autoware_mini_docker_compose"
+    local compose_file="$compose_dir/docker-compose.yml"
+    local container_name="autoware_mini"
+    local docker_binary=""
+    local container_exists=1
+    local container_running=1
+    local process_count
+
+    if [[ ! -d "$compose_dir" || ! -f "$compose_file" ]]; then
+        info "Skipping Autoware Docker setup: $compose_file not found."
+        return 0
+    fi
+
+    if ! resolve_autoware_compose_command; then
+        info "Skipping Autoware Docker setup: Docker Compose is not available."
+        info "Manual fallback: from $compose_dir run \`docker compose up -d --build autoware_mini\`."
+        return 0
+    fi
+
+    process_count="${PROCESS_COUNT:-}"
+    if [[ -z "$process_count" ]] && command -v nproc >/dev/null 2>&1; then
+        process_count="$(nproc)"
+    fi
+
+    docker_binary="$(command -v docker || true)"
+    if [[ -n "$docker_binary" ]]; then
+        if "$docker_binary" container inspect "$container_name" >/dev/null 2>&1; then
+            container_exists=0
+            if [[ "$("$docker_binary" container inspect --format '{{.State.Running}}' "$container_name" 2>/dev/null)" == "true" ]]; then
+                container_running=0
+            fi
+        fi
+    fi
+
+    if [[ $container_running -eq 0 ]]; then
+        info "Autoware Docker container '$container_name' is already running."
+        return 0
+    fi
+
+    if [[ $container_exists -eq 0 && -n "$docker_binary" ]]; then
+        info "Starting existing Autoware Docker container '$container_name'."
+        run_cmd "$docker_binary" start "$container_name" >/dev/null
+        info "Autoware Docker container is ready."
+        return 0
+    fi
+
+    info "Building and starting Autoware Docker container from $compose_dir"
+    (
+        cd -- "$compose_dir"
+        if [[ -n "$process_count" ]]; then
+            export PROCESS_COUNT="$process_count"
+        fi
+        run_cmd "${autoware_compose_cmd[@]}" up -d --build "$container_name"
+    )
+    info "Autoware Docker container is ready."
+}
+
 bootstrap_carla_dir() {
     local input_dir="$1"
     local requested_version="${2:-}"
@@ -409,6 +495,10 @@ bootstrap_carla_dir() {
     python3 -m py_compile "$BRIDGE_HELPER_PY" "$SUMO_SIMULATION_PY" "$CREATE_SUMO_VTYPES_PY" >/dev/null
 
     import_carla_assets "$CARLA_DIR"
+
+    if [[ "$VERSION" == "0.9.13" ]]; then
+        setup_autoware_docker
+    fi
 
     info "Bootstrap completed for $CARLA_DIR."
     info "The dashboard will generate custom_Town*.sumocfg on demand."

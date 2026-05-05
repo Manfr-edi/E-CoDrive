@@ -53,6 +53,7 @@ class DashboardSumoSimulation(SumoSimulation):
 
     @staticmethod
     def _is_dashboard_battery_vehicle(veh_id, type_id=None):
+        """Return whether the vehicle should be tracked by dashboard battery logic."""
         vehicle_id = str(veh_id)
         resolved_type_id = "" if type_id is None else str(type_id)
         return vehicle_id == "ego_vehicle" or vehicle_id.startswith("carla") or resolved_type_id in {
@@ -63,6 +64,7 @@ class DashboardSumoSimulation(SumoSimulation):
 
     @staticmethod
     def _resolve_vehicle_id(veh_id):
+        """Resolve a user-provided vehicle id against the live TraCI vehicle list."""
         target_id = str(veh_id)
         for candidate_id in traci.vehicle.getIDList():
             if candidate_id == veh_id or str(candidate_id) == target_id:
@@ -71,11 +73,13 @@ class DashboardSumoSimulation(SumoSimulation):
 
     @staticmethod
     def _has_battery_device(veh_id):
+        """Return whether a vehicle exposes battery-related TraCI parameters."""
         resolved_vehicle_id = DashboardSumoSimulation._resolve_vehicle_id(veh_id)
         if resolved_vehicle_id is None:
             return False
 
         def _is_enabled(value):
+            """Return whether a TraCI parameter value should be treated as enabled."""
             if value in (None, ""):
                 return False
             return str(value).strip().lower() not in {"0", "false", "none"}
@@ -107,6 +111,7 @@ class DashboardSumoSimulation(SumoSimulation):
 
     @staticmethod
     def get_actor(actor_id):
+        """Build the CARLA-facing actor representation for a subscribed SUMO vehicle."""
         results = traci.vehicle.getSubscriptionResults(actor_id)
 
         type_id = results[traci.constants.VAR_TYPE]
@@ -144,6 +149,7 @@ class DashboardSumoSimulation(SumoSimulation):
 
     @staticmethod
     def _set_vehicletype_attribute(type_id, setter_name, value, cast=str):
+        """Set vehicletype attribute."""
         if value is None or value == "":
             return
 
@@ -158,6 +164,7 @@ class DashboardSumoSimulation(SumoSimulation):
 
     @staticmethod
     def _set_vehicletype_color(type_id, color):
+        """Set vehicletype color."""
         if not color:
             return
 
@@ -174,6 +181,7 @@ class DashboardSumoSimulation(SumoSimulation):
         vtype_params=None,
         source_type_id=None,
     ):
+        """Ensure vehicle type."""
         if not type_id:
             return False
 
@@ -232,18 +240,21 @@ class DashboardSumoSimulation(SumoSimulation):
 
     @staticmethod
     def _detect_emission_model(emission_class):
+        """Map a SUMO emission class to the dashboard emission-model selector."""
         if emission_class == MMPEVEM_EMISSION_CLASS:
             return MMPEVEM_EMISSION_CLASS
         return ENERGY_EMISSION_CLASS
 
     @staticmethod
     def _get_vtype_default_config(emission_model):
+        """Return default attribute and parameter sets for an emission model."""
         if emission_model == MMPEVEM_EMISSION_CLASS:
             return dict(MMPEVEM_ATTRIBUTE_DEFAULTS), dict(MMPEVEM_PARAM_DEFAULTS)
         return dict(ENERGY_ATTRIBUTE_DEFAULTS), dict(ENERGY_PARAM_DEFAULTS)
 
     @staticmethod
     def _get_vehicletype_value(type_id, getter_name, default=None):
+        """Read a TraCI vehicle-type attribute while tolerating unsupported getters."""
         getter = getattr(traci.vehicletype, getter_name, None)
         if getter is None:
             return default
@@ -255,6 +266,7 @@ class DashboardSumoSimulation(SumoSimulation):
 
     @staticmethod
     def _get_vehicletype_color_name(type_id, default="white"):
+        """Return the normalized color name for a SUMO vehicle type."""
         color = DashboardSumoSimulation._get_vehicletype_value(type_id, "getColor")
         if color is None:
             return default
@@ -268,6 +280,7 @@ class DashboardSumoSimulation(SumoSimulation):
 
     @staticmethod
     def _vehicle_type_config(type_id, carla_blueprint=None):
+        """Build the editable dashboard configuration for a SUMO vehicle type."""
         emission_class = (
             DashboardSumoSimulation._get_vehicletype_value(type_id, "getEmissionClass", "")
             or ""
@@ -330,6 +343,7 @@ class DashboardSumoSimulation(SumoSimulation):
 
     @staticmethod
     def _vehicle_charge_level(veh_id, battery_capacity):
+        """Return the current battery charge level capped to the configured capacity."""
         try:
             current_charge = float(
                 traci.vehicle.getParameter(veh_id, "device.battery.chargeLevel")
@@ -340,6 +354,7 @@ class DashboardSumoSimulation(SumoSimulation):
 
     @staticmethod
     def _vehicle_failure_threshold(veh_id):
+        """Return the configured battery-stop threshold for a vehicle."""
         try:
             value = traci.vehicle.getParameter(veh_id, "dashboard.battery.failureThreshold")
             if value not in (None, ""):
@@ -355,6 +370,7 @@ class DashboardSumoSimulation(SumoSimulation):
 
     @staticmethod
     def _battery_stop_applied(veh_id):
+        """Return whether a battery-stop action has already been applied."""
         try:
             value = traci.vehicle.getParameter(veh_id, "dashboard.battery.stopApplied")
             return str(value).strip().lower() in {"1", "true", "yes"}
@@ -363,6 +379,7 @@ class DashboardSumoSimulation(SumoSimulation):
 
     @staticmethod
     def _mark_battery_stop_applied(veh_id):
+        """Mark a vehicle as already processed by the battery-stop logic."""
         try:
             traci.vehicle.setParameter(veh_id, "dashboard.battery.stopApplied", "true")
         except traci.exceptions.TraCIException:
@@ -370,6 +387,7 @@ class DashboardSumoSimulation(SumoSimulation):
 
     @staticmethod
     def _request_battery_stop(veh_id, type_id=None):
+        """Request battery stop."""
         resolved_type_id = str(type_id or "")
         try:
             traci.vehicle.setSpeed(veh_id, 0)
@@ -386,10 +404,12 @@ class DashboardSumoSimulation(SumoSimulation):
 
     @staticmethod
     def _live_vehicle_type_id(veh_id):
+        """Build a unique temporary vType id for a live vehicle edit."""
         sanitized = re.sub(r"[^A-Za-z0-9_]+", "_", str(veh_id))
         return f"dashboard_live_{sanitized}_{int(traci.simulation.getTime() * 1000)}"
 
     def list_vehicles(self):
+        """Return the live SUMO vehicles visible to the dashboard."""
         vehicles = []
         for veh_id in sorted(
             traci.vehicle.getIDList(),
@@ -412,6 +432,7 @@ class DashboardSumoSimulation(SumoSimulation):
         return vehicles
 
     def get_vehicle_vtype_config(self, veh_id):
+        """Return the editable vType configuration for a live vehicle."""
         resolved_vehicle_id = self._resolve_vehicle_id(veh_id)
         if resolved_vehicle_id is None:
             return None
@@ -446,6 +467,7 @@ class DashboardSumoSimulation(SumoSimulation):
         attributes=None,
         parameters=None,
     ):
+        """Update vehicle vtype."""
         resolved_vehicle_id = self._resolve_vehicle_id(veh_id)
         if resolved_vehicle_id is None:
             return None
@@ -539,6 +561,7 @@ class DashboardSumoSimulation(SumoSimulation):
         vtype_attrs=None,
         vtype_params=None,
     ):
+        """Spawn the dashboard ego vehicle, optionally routing it through a via edge."""
         if not self._ensure_vehicle_type(vtype, carla_blueprint, vtype_attrs, vtype_params):
             return False
 
@@ -587,6 +610,7 @@ class DashboardSumoSimulation(SumoSimulation):
         return True
 
     def get_vehicle_state(self, veh_id):
+        """Return the live dashboard state for a SUMO vehicle."""
         resolved_vehicle_id = self._resolve_vehicle_id(veh_id)
         if resolved_vehicle_id is None:
             return None
@@ -657,6 +681,7 @@ class DashboardSumoSimulation(SumoSimulation):
         }
 
     def tick(self):
+        """Advance the bridge and enforce dashboard battery-stop rules."""
         super().tick()
 
         for veh_id in traci.vehicle.getIDList():
@@ -687,6 +712,7 @@ def patch_bridge_helper(bridge_helper):
     original_get_carla_blueprint = bridge_helper.get_carla_blueprint
 
     def get_carla_blueprint(sumo_actor, sync_color=False):
+        """Resolve the CARLA blueprint to use for a dashboard-managed SUMO actor."""
         carla_blueprint = getattr(sumo_actor, "carla_blueprint", "")
         blueprint_library = bridge_helper.blueprint_library
         blueprint_ids = [blueprint.id for blueprint in blueprint_library]

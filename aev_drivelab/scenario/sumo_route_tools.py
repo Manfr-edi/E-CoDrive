@@ -123,6 +123,7 @@ BASE_COLOR_NAMES = {
 
 
 def _normalize_carla_version(version):
+    """Normalize a CARLA version string to the repository naming convention."""
     if version is None:
         return DEFAULT_CARLA_VERSION
 
@@ -134,6 +135,7 @@ def _normalize_carla_version(version):
 
 
 def _extract_supported_carla_version(text):
+    """Extract the first supported CARLA version mentioned in free-form text."""
     if text is None:
         return None
 
@@ -145,6 +147,7 @@ def _extract_supported_carla_version(text):
 
 
 def _infer_carla_version_from_dir(carla_dir):
+    """Infer the CARLA version from an installation directory."""
     version_file = carla_dir / "VERSION"
     if version_file.exists():
         try:
@@ -171,6 +174,7 @@ def _infer_carla_version_from_dir(carla_dir):
 
 
 def _carla_installation_priority(carla_dir):
+    """Return the sort key used to prioritize discovered CARLA installations."""
     name = carla_dir.name
     return (
         name.lower() != "carla",
@@ -180,6 +184,7 @@ def _carla_installation_priority(carla_dir):
 
 
 def _discover_carla_installations():
+    """Discover supported CARLA installations in the repository."""
     installations = {}
     candidates = []
 
@@ -225,6 +230,7 @@ def _discover_carla_installations():
 
 
 def available_carla_versions():
+    """Return the supported CARLA versions available in the repository."""
     installations = _discover_carla_installations()
     return [
         version
@@ -234,6 +240,7 @@ def available_carla_versions():
 
 
 def carla_paths(version=None):
+    """Resolve the main filesystem paths for a CARLA installation."""
     normalized = _normalize_carla_version(version)
     installations = _discover_carla_installations()
     carla_dir = installations.get(normalized)
@@ -268,6 +275,7 @@ def carla_paths(version=None):
 
 
 def set_active_carla_version(version=None):
+    """Set CARLA version string."""
     global ACTIVE_CARLA_VERSION
     global CARLA_DIR, CARLA_SCRIPT, CARLA_CONFIG_SCRIPT, CARLA_DIST_DIR
     global SUMO_DIR, EXAMPLES_DIR, NET_DIR, ROUTE_DIR, OUTPUT_DIR, SUMO_TOOLS_DIR
@@ -297,14 +305,17 @@ def set_active_carla_version(version=None):
 
 
 def active_carla_version():
+    """Return the active CARLA version string."""
     return ACTIVE_CARLA_VERSION
 
 
 def current_sumo_dir():
+    """Return the current a path relative to the active SUMO co-simulation directory."""
     return SUMO_DIR
 
 
 def installed_carla_python_api_version():
+    """Return the installed carla python api version."""
     try:
         return package_version("carla")
     except PackageNotFoundError:
@@ -312,11 +323,13 @@ def installed_carla_python_api_version():
 
 
 def _carla_python_env_var_name(version=None):
+    """Return the environment variable name for a version-specific CARLA interpreter."""
     normalized = _normalize_carla_version(version or active_carla_version())
     return f"CARLA_PYTHON_{normalized.replace('.', '_')}"
 
 
 def resolve_carla_python_executable(version=None):
+    """Resolve Python executable used for CARLA helpers."""
     candidates = []
 
     version_specific = os.environ.get(_carla_python_env_var_name(version))
@@ -345,6 +358,7 @@ def resolve_carla_python_executable(version=None):
 
 
 def selected_carla_python_api_archive():
+    """Return the selected CARLA Python API archive for the active setup."""
     if CARLA_DIST_DIR is None or not CARLA_DIST_DIR.exists():
         return None
 
@@ -366,6 +380,7 @@ def selected_carla_python_api_archive():
     py_minor = sys.version_info.minor
 
     def score(path):
+        """Rank CARLA Python API archives by compatibility with the active interpreter."""
         name = path.name
         return (
             f"cp{py_major}{py_minor}" in name or f"py{py_major}.{py_minor}" in name,
@@ -378,6 +393,7 @@ def selected_carla_python_api_archive():
 
 
 def selected_carla_runtime_library_dirs(python_executable=None):
+    """Return the selected runtime library directories needed by CARLA."""
     candidates = []
     executable = Path(python_executable or sys.executable).resolve()
     candidates.append(executable.parent.parent / "lib")
@@ -408,6 +424,7 @@ def selected_carla_runtime_library_dirs(python_executable=None):
 
 
 def ensure_carla_python_api_ready():
+    """Ensure that the selected CARLA Python API can be imported."""
     python_executable = resolve_carla_python_executable()
     command = [str(python_executable), "-c", "import carla"]
     process = subprocess.run(
@@ -431,6 +448,7 @@ def ensure_carla_python_api_ready():
 
 
 def ensure_carla_runner_dependencies_ready():
+    """Ensure that the CARLA runner dependencies are available."""
     python_executable = resolve_carla_python_executable()
     command = [
         str(python_executable),
@@ -466,11 +484,13 @@ def ensure_carla_runner_dependencies_ready():
 
 
 def _docker_exec_env():
+    """Handle a Docker-friendly copy of the current environment."""
     env = os.environ.copy()
     return env
 
 
 def _prepare_autoware_x11_access():
+    """Prepare host X11 access before launching Autoware in Docker."""
     display = str(os.environ.get("DISPLAY", "")).strip()
     if not display:
         raise RuntimeError(
@@ -501,6 +521,7 @@ def _prepare_autoware_x11_access():
 
 
 def find_running_autoware_container(name_filter=DEFAULT_AUTOWARE_DOCKER_FILTER):
+    """Find the active Autoware container."""
     docker_binary = shutil.which("docker")
     if docker_binary is None:
         raise FileNotFoundError("Docker executable not found in PATH.")
@@ -575,6 +596,7 @@ def ensure_autoware_blueprint_available(
     host=DEFAULT_CARLA_HOST,
     port=DEFAULT_CARLA_PORT,
 ):
+    """Ensure that the required Autoware CARLA blueprint exists."""
     docker_binary = shutil.which("docker")
     check_script = (
         "import carla; "
@@ -617,6 +639,7 @@ def _configure_autoware_planning_speed_limit_in_container(
     container_name,
     planner_speed_limit_kmh,
 ):
+    """Handle the planner speed limit inside the Autoware container."""
     if planner_speed_limit_kmh is None:
         return None
 
@@ -694,6 +717,7 @@ def _publish_autoware_route_in_container(
     planner_speed_limit_kmh=None,
     ros_timeout_seconds=75,
 ):
+    """Handle the initial pose and goal inside the Autoware container."""
     docker_binary = shutil.which("docker")
     payload = json.dumps(
         {
@@ -830,6 +854,7 @@ def request_autoware_battery_stop(
     name_filter=DEFAULT_AUTOWARE_DOCKER_FILTER,
     ros_timeout_seconds=15,
 ):
+    """Request an emergency stop to the Autoware ego vehicle."""
     container = find_running_autoware_container(name_filter=name_filter)
     container_name = container.get("Names") or container.get("ID")
     docker_binary = shutil.which("docker")
@@ -922,6 +947,7 @@ def launch_autoware_carla_in_container(
     goal_edge=None,
     speed_limit_kmh=None,
 ):
+    """Launch Autoware against the selected CARLA map inside Docker."""
     map_name = str(map_name).strip()
     if not map_name:
         raise ValueError("A valid map name is required to start Autoware.")
@@ -1060,6 +1086,7 @@ set_active_carla_version(
 
 @dataclass(frozen=True)
 class SumoEdge:
+    """Store the metadata needed to render and select a SUMO edge."""
     edge_id: str
     from_node: str
     to_node: str
@@ -1070,6 +1097,7 @@ class SumoEdge:
 
 @dataclass(frozen=True)
 class ScenarioResult:
+    """Describe the artifacts and command produced by scenario generation."""
     map_name: str
     target_edge: str
     route_file: Path
@@ -1082,10 +1110,14 @@ class ScenarioResult:
     mode: str
     stdout: str
     stderr: str
+    spawn_begin: float = 0.0
+    spawn_end: float = 0.0
+    simulation_end: float = 0.0
 
 
 @dataclass(frozen=True)
 class SynchronizationLaunch:
+    """Describe a launched co-simulation process and its related files."""
     sync_process: object
     carla_process: object
     sync_log_file: Path
@@ -1098,10 +1130,12 @@ class SynchronizationLaunch:
 
 
 def available_maps():
+    """Return available maps discovered in the active SUMO installation."""
     return sorted(path.stem.replace(".net", "") for path in NET_DIR.glob("*.net.xml"))
 
 
 def available_vehicle_types():
+    """Return available vehicle types for the active workflow."""
     vehicle_types = []
     seen = set()
 
@@ -1128,6 +1162,7 @@ def available_vehicle_types():
 
 
 def _read_carla_blueprints_json():
+    """Read the CARLA blueprint metadata JSON file."""
     if not CARLA_VTYPES_JSON.exists():
         return {}
 
@@ -1136,6 +1171,7 @@ def _read_carla_blueprints_json():
 
 
 def _read_carla_vtypes_data():
+    """Read the CARLA vTypes JSON payload."""
     if not CARLA_VTYPES_JSON.exists():
         return {
             "DEFAULT_2_WHEELED_VEHICLE": {"vClass": "motorcycle"},
@@ -1148,6 +1184,7 @@ def _read_carla_vtypes_data():
 
 
 def _write_carla_vtypes_data(data):
+    """Write the CARLA vTypes JSON payload."""
     CARLA_VTYPES_JSON.parent.mkdir(parents=True, exist_ok=True)
     with CARLA_VTYPES_JSON.open("w", encoding="utf-8") as handle:
         json.dump(data, handle, indent=4)
@@ -1155,6 +1192,7 @@ def _write_carla_vtypes_data(data):
 
 
 def _normalize_color_for_storage(color_value):
+    """Normalize a color value for JSON/XML storage."""
     if color_value is None:
         return None
 
@@ -1166,6 +1204,7 @@ def _normalize_color_for_storage(color_value):
 
 
 def _normalize_color_for_form(color_value):
+    """Normalize a color value for dashboard form fields."""
     if color_value is None:
         return "white"
 
@@ -1181,6 +1220,7 @@ def _normalize_color_for_form(color_value):
 
 
 def _merge_vtype_xml_specs(specs, path):
+    """Merge vehicle-type specs gathered from the XML definitions."""
     if not path.exists():
         return
 
@@ -1197,6 +1237,7 @@ def _merge_vtype_xml_specs(specs, path):
 
 
 def carla_vehicle_type_specs():
+    """Collect vehicle-type specs from the configured CARLA XML sources."""
     specs = {
         type_id: dict(values)
         for type_id, values in _read_carla_blueprints_json().items()
@@ -1211,6 +1252,7 @@ def carla_vehicle_type_specs():
 
 
 def available_carla_vehicle_types():
+    """Return available vehicle types for the active workflow."""
     vehicle_types = sorted(carla_vehicle_type_specs())
 
     if DEFAULT_EGO_BLUEPRINT in vehicle_types:
@@ -1221,6 +1263,7 @@ def available_carla_vehicle_types():
 
 
 def _vtype_params(vtype):
+    """Handle the XML parameter dictionary for a vehicle type node."""
     return {
         param.get("key"): param.get("value", "")
         for param in vtype.findall("param")
@@ -1229,6 +1272,7 @@ def _vtype_params(vtype):
 
 
 def _parameter_payload(params):
+    """Handle the parameter payload expected by SUMO XML writers."""
     return {
         key: str(value)
         for key, value in (params or {}).items()
@@ -1237,18 +1281,21 @@ def _parameter_payload(params):
 
 
 def ego_emission_class_value(emission_model):
+    """Return the SUMO emission-class value for the selected ego model."""
     if emission_model == MMPEVEM_EMISSION_CLASS:
         return MMPEVEM_EMISSION_CLASS
     return "Energy/unknown"
 
 
 def ego_model_defaults(emission_model):
+    """Return default attribute and parameter dictionaries for an ego emission model."""
     if emission_model == MMPEVEM_EMISSION_CLASS:
         return dict(MMPEVEM_ATTRIBUTE_DEFAULTS), dict(MMPEVEM_PARAM_DEFAULTS)
     return dict(ENERGY_ATTRIBUTE_DEFAULTS), dict(ENERGY_PARAM_DEFAULTS)
 
 
 def read_ego_vtype_config():
+    """Read the stored SUMO ego vehicle-type configuration."""
     config = {
         "sumo_vtype": EGO_SUMO_VTYPE,
         "carla_blueprint": DEFAULT_EGO_BLUEPRINT,
@@ -1315,6 +1362,7 @@ def read_ego_vtype_config():
 
 
 def read_autoware_ego_vtype_config():
+    """Read the stored Autoware ego vehicle-type configuration."""
     config = {
         "sumo_vtype": AUTOWARE_EGO_VTYPE,
         "carla_blueprint": AUTOWARE_EGO_VTYPE,
@@ -1407,6 +1455,7 @@ def write_ego_vtype_config(
     attributes=None,
     parameters=None,
 ):
+    """Write the stored SUMO ego vehicle-type configuration."""
     specs = carla_vehicle_type_specs().get(carla_blueprint, {})
     attributes = _parameter_payload(attributes)
     parameters = _parameter_payload(parameters)
@@ -1455,6 +1504,7 @@ def write_autoware_ego_vtype_config(
     attributes=None,
     parameters=None,
 ):
+    """Write the stored Autoware ego vehicle-type configuration."""
     data = _read_carla_vtypes_data()
     carla_blueprints = data.setdefault("carla_blueprints", {})
     current_spec = dict(carla_blueprints.get(AUTOWARE_EGO_VTYPE, {}))
@@ -1499,26 +1549,32 @@ def write_autoware_ego_vtype_config(
 
 
 def map_net_file(map_name=DEFAULT_MAP):
+    """Return the the `.net.xml` file for the selected map."""
     return NET_DIR / f"{map_name}.net.xml"
 
 
 def map_route_file(map_name=DEFAULT_MAP):
+    """Return the the `.rou.xml` file for the selected map."""
     return ROUTE_DIR / f"custom_{map_name}_traffic.rou.xml"
 
 
 def map_trip_file(map_name=DEFAULT_MAP):
+    """Return the the `.trips.xml` file for the selected map."""
     return ROUTE_DIR / f"custom_{map_name}_traffic.trips.xml"
 
 
 def map_sumocfg_file(map_name=DEFAULT_MAP):
+    """Return the the `.sumocfg` file for the selected map."""
     return EXAMPLES_DIR / f"custom_{map_name}.sumocfg"
 
 
 def relative_to_examples(path):
+    """Return the relative to examples."""
     return path.relative_to(EXAMPLES_DIR).as_posix()
 
 
 def _net_location_offset(map_name=DEFAULT_MAP):
+    """Read the coordinate offset stored in a SUMO net file."""
     root = ET.parse(map_net_file(map_name)).getroot()
     location = root.find("location")
     net_offset_text = (
@@ -1534,6 +1590,7 @@ def _net_location_offset(map_name=DEFAULT_MAP):
 
 
 def _parse_shape(shape_text):
+    """Parse shape."""
     points = []
     for token in (shape_text or "").split():
         values = token.split(",")
@@ -1544,6 +1601,7 @@ def _parse_shape(shape_text):
 
 
 def _lane_allows_road_vehicle(lane):
+    """Return whether a SUMO lane can be used by road vehicles."""
     lane_type = lane.get("type")
     if lane_type == "driving":
         return True
@@ -1572,6 +1630,7 @@ def _lane_allows_road_vehicle(lane):
 
 
 def read_sumo_edges(map_name=DEFAULT_MAP):
+    """Read sumo edges."""
     net_file = map_net_file(map_name)
     root = ET.parse(net_file).getroot()
     edges = []
@@ -1607,6 +1666,7 @@ def read_sumo_edges(map_name=DEFAULT_MAP):
 
 
 def edge_label(edge):
+    """Build a readable label for a SUMO edge selection."""
     suffix = "lane" if edge.lane_count == 1 else "lanes"
     direction = edge_direction_label(edge)
     return (
@@ -1616,6 +1676,7 @@ def edge_label(edge):
 
 
 def edge_direction_label(edge):
+    """Build a direction label for a SUMO edge selection."""
     if len(edge.shape) < 2:
         return f"{edge.from_node}->{edge.to_node}"
 
@@ -1635,11 +1696,13 @@ def edge_direction_label(edge):
 
 
 def opposite_edge_id(edge_id, edge_ids):
+    """Return the opposite-direction edge id when it exists."""
     candidate = edge_id[1:] if edge_id.startswith("-") else f"-{edge_id}"
     return candidate if candidate in edge_ids else None
 
 
 def edge_direction_options(edges, edge_id):
+    """Return the selectable direction variants for an edge id."""
     edge_ids = {edge.edge_id for edge in edges}
     options = [edge_id]
     opposite = opposite_edge_id(edge_id, edge_ids)
@@ -1649,6 +1712,7 @@ def edge_direction_options(edges, edge_id):
 
 
 def _point_along_shape(shape, distance_from_start):
+    """Interpolate a point along a polyline at the requested distance."""
     if len(shape) < 2:
         raise ValueError("At least two points are required to compute a spawn direction.")
 
@@ -1686,6 +1750,7 @@ def _point_along_shape(shape, distance_from_start):
 
 
 def _shape_length(shape):
+    """Return the total length of a polyline."""
     total_length = 0.0
     for start, end in zip(shape, shape[1:]):
         total_length += math.hypot(end[0] - start[0], end[1] - start[1])
@@ -1693,22 +1758,26 @@ def _shape_length(shape):
 
 
 def _sumo_heading_from_vector(dx, dy):
+    """Convert a 2D vector into a SUMO heading angle."""
     if abs(dx) <= 1e-6 and abs(dy) <= 1e-6:
         raise ValueError("Could not determine a valid heading from the selected edge.")
     return (90.0 - math.degrees(math.atan2(dy, dx))) % 360.0
 
 
 def _autoware_map_xy_from_sumo_point(map_name, sumo_x, sumo_y):
+    """Convert a SUMO point into the Autoware map coordinate frame."""
     offset_x, offset_y = _net_location_offset(map_name)
     return sumo_x - offset_x, sumo_y - offset_y
 
 
 def _carla_xy_from_sumo_point(map_name, sumo_x, sumo_y):
+    """Convert a SUMO point into CARLA map coordinates."""
     map_x, map_y = _autoware_map_xy_from_sumo_point(map_name, sumo_x, sumo_y)
     return map_x, -map_y
 
 
 def _fallback_autoware_pose_from_edge(edge, map_name, edge_position="start", z_value=0.0):
+    """Build an approximate Autoware pose directly from a SUMO edge shape."""
     reference_shape = edge.shape
     reference_length = _shape_length(reference_shape)
     probe_distance = min(max(reference_length * 0.02, 1.0), 4.0)
@@ -1737,6 +1806,7 @@ def _fallback_autoware_pose_from_edge(edge, map_name, edge_position="start", z_v
 
 
 def _quaternion_from_euler_deg(roll_deg, pitch_deg, yaw_deg):
+    """Convert Euler angles in degrees into a quaternion payload."""
     roll = math.radians(float(roll_deg))
     pitch = math.radians(float(pitch_deg))
     yaw = math.radians(float(yaw_deg))
@@ -1761,6 +1831,7 @@ def _quaternion_from_euler_deg(roll_deg, pitch_deg, yaw_deg):
 
 
 def _carla_waypoint_transform(carla_x, carla_y, host=DEFAULT_CARLA_HOST, port=DEFAULT_CARLA_PORT):
+    """Query CARLA for the waypoint transform closest to the requested coordinates."""
     query_script = (
         "import warnings; "
         "warnings.filterwarnings('ignore', message='pkg_resources is deprecated as an API.*'); "
@@ -1820,6 +1891,7 @@ def autoware_pose_from_edge(
     pose_role="goal",
     edge_position="start",
 ):
+    """Build an Autoware pose payload from a SUMO edge."""
     edge_id = str(edge_id).strip()
     if not edge_id:
         raise ValueError("A valid SUMO edge is required to build an Autoware pose.")
@@ -1854,6 +1926,7 @@ def autoware_spawn_point_from_edge(
     host=DEFAULT_CARLA_HOST,
     port=DEFAULT_CARLA_PORT,
 ):
+    """Build a CARLA spawn-point string from a SUMO edge."""
     edge_id = str(edge_id).strip()
     if not edge_id:
         raise ValueError("A valid SUMO edge is required to build an Autoware spawn point.")
@@ -1903,6 +1976,7 @@ def autoware_spawn_point_from_edge(
 
 
 def _point_segment_distance(px, py, ax, ay, bx, by):
+    """Return the shortest distance between a point and a line segment."""
     abx = bx - ax
     aby = by - ay
     apx = px - ax
@@ -1919,6 +1993,7 @@ def _point_segment_distance(px, py, ax, ay, bx, by):
 
 
 def nearest_edge(edges, x, y):
+    """Return the SUMO edge closest to the given map coordinates."""
     best_edge = None
     best_distance = float("inf")
 
@@ -1933,6 +2008,7 @@ def nearest_edge(edges, x, y):
 
 
 def _indent_xml(element, level=0):
+    """Indent an XML tree in place for readable output."""
     indent = "\n" + level * "  "
     child_indent = "\n" + (level + 1) * "  "
 
@@ -1949,6 +2025,7 @@ def _indent_xml(element, level=0):
 
 
 def _write_xml(path, root):
+    """Write an XML tree to disk with stable indentation."""
     path.parent.mkdir(parents=True, exist_ok=True)
     _indent_xml(root)
     tree = ET.ElementTree(root)
@@ -1956,6 +2033,7 @@ def _write_xml(path, root):
 
 
 def _build_env():
+    """Build the subprocess environment used by SUMO and CARLA helpers."""
     env = os.environ.copy()
     resolved_sumo_home = _resolve_sumo_home(env)
     if resolved_sumo_home is not None:
@@ -1993,6 +2071,7 @@ def _build_env():
 
 
 def _resolve_sumo_home(env=None):
+    """Resolve the SUMO home directory to use for subprocesses."""
     if env is None:
         env = os.environ
 
@@ -2013,6 +2092,7 @@ def _resolve_sumo_home(env=None):
 
 
 def _resolve_sumo_tools_dir(env=None):
+    """Resolve the SUMO tools directory for the active environment."""
     sumo_home = _resolve_sumo_home(env)
     if sumo_home is not None:
         tools_dir = sumo_home / "tools"
@@ -2029,6 +2109,7 @@ def _resolve_sumo_tools_dir(env=None):
 
 
 def _run_command(cmd, cwd=None):
+    """Run a helper command in the SUMO environment and return its captured output."""
     if cwd is None:
         cwd = SUMO_DIR
 
@@ -2048,6 +2129,7 @@ def _run_command(cmd, cwd=None):
 
 
 def _depart_times(count, begin, end, pattern, rng):
+    """Generate departure times for scenario traffic according to the selected pattern."""
     if count <= 0:
         return []
     if end < begin:
@@ -2067,6 +2149,7 @@ def _depart_times(count, begin, end, pattern, rng):
 
 
 def _vehicle_type_for_trip(rng, vehicle_type, random_vehicle_type, vehicle_types):
+    """Choose the vehicle type to use for a generated trip."""
     if random_vehicle_type:
         choices = vehicle_types or available_vehicle_types()
         if not choices:
@@ -2093,6 +2176,7 @@ def _write_congestion_trips(
     vehicle_types=None,
     candidate_count=None,
 ):
+    """Write the trip file for a congestion-driven scenario."""
     rng = random.Random(seed)
     if candidate_count is None:
         candidate_count = max(vehicle_count * 4, vehicle_count + 20)
@@ -2139,7 +2223,18 @@ def _write_congestion_trips(
     _write_xml(trip_file, root)
 
 
+def _write_empty_routes_file(path):
+    """Write a valid SUMO routes file with no vehicles."""
+    ET.register_namespace("xsi", XSI_NS)
+    root = ET.Element(
+        "routes",
+        {f"{{{XSI_NS}}}noNamespaceSchemaLocation": "http://sumo.dlr.de/xsd/routes_file.xsd"},
+    )
+    _write_xml(path, root)
+
+
 def _count_route_vehicles(route_file, target_edge=None):
+    """Count vehicles stored in a route file."""
     if not route_file.exists():
         return 0, 0
 
@@ -2159,11 +2254,13 @@ def _count_route_vehicles(route_file, target_edge=None):
 
 
 def _trim_route_file(route_file, max_vehicles):
+    """Trim a route file down to the earliest `max_vehicles` departures."""
     tree = ET.parse(route_file)
     root = tree.getroot()
     vehicles = root.findall("vehicle")
 
     def depart_time(vehicle):
+        """Extract a sortable departure time from a route entry."""
         try:
             return float(vehicle.get("depart", "0"))
         except ValueError:
@@ -2178,12 +2275,14 @@ def _trim_route_file(route_file, max_vehicles):
 
 
 def _filter_route_file_by_target(route_file, target_edge, max_vehicles=None):
+    """Keep only the routes that traverse a target edge."""
     tree = ET.parse(route_file)
     root = tree.getroot()
     vehicles = root.findall("vehicle")
     kept = []
 
     def depart_time(vehicle):
+        """Extract a sortable departure time from a route entry."""
         try:
             return float(vehicle.get("depart", "0"))
         except ValueError:
@@ -2208,6 +2307,7 @@ def _filter_route_file_by_target(route_file, target_edge, max_vehicles=None):
 
 
 def _assign_random_vehicle_types(route_file, seed=42, vehicle_types=None):
+    """Assign vehicle types for the active workflow."""
     choices = vehicle_types or available_vehicle_types()
     if not choices:
         raise ValueError("No SUMO vType is available for random vType.")
@@ -2222,7 +2322,8 @@ def _assign_random_vehicle_types(route_file, seed=42, vehicle_types=None):
     _write_xml(route_file, root)
 
 
-def _write_sumocfg(map_name, route_file, sumocfg_file):
+def _write_sumocfg(map_name, route_file, sumocfg_file, simulation_end=None):
+    """Write the SUMO configuration file for a generated scenario."""
     ET.register_namespace("xsi", XSI_NS)
     root = ET.Element(
         "configuration",
@@ -2249,6 +2350,11 @@ def _write_sumocfg(map_name, route_file, sumocfg_file):
     gui_only = ET.SubElement(root, "gui_only")
     ET.SubElement(gui_only, "gui-settings-file", {"value": "viewsettings.xml"})
 
+    if simulation_end is not None:
+        time_element = ET.SubElement(root, "time")
+        ET.SubElement(time_element, "begin", {"value": "0"})
+        ET.SubElement(time_element, "end", {"value": str(float(simulation_end))})
+
     output = ET.SubElement(root, "output")
     ET.SubElement(output, "battery-output", {"value": "output/battery.out.xml"})
     ET.SubElement(output, "tripinfo-output", {"value": "output/tripinfos.xml"})
@@ -2267,6 +2373,7 @@ def generate_congestion_scenario(
     vehicle_count=100,
     begin=0,
     end=120,
+    simulation_end=None,
     spawn_pattern="Equidistant",
     source_edge=None,
     seed=42,
@@ -2274,7 +2381,12 @@ def generate_congestion_scenario(
     random_vehicle_type=False,
     vehicle_types=None,
 ):
-    if not target_edge:
+    """Generate a congestion-focused SUMO scenario and its artifacts."""
+    vehicle_count = int(vehicle_count)
+    if vehicle_count < 0:
+        raise ValueError("The number of vehicles cannot be negative.")
+
+    if not target_edge and vehicle_count > 0:
         raise ValueError("Select an edge to congest.")
 
     edges = read_sumo_edges(map_name)
@@ -2290,6 +2402,32 @@ def generate_congestion_scenario(
     trip_file = map_trip_file(map_name)
     route_file = map_route_file(map_name)
     sumocfg_file = map_sumocfg_file(map_name)
+    simulation_end = max(
+        float(end),
+        float(simulation_end) if simulation_end is not None else float(end),
+    )
+
+    if vehicle_count == 0:
+        _write_empty_routes_file(trip_file)
+        _write_empty_routes_file(route_file)
+        _write_sumocfg(map_name, route_file, sumocfg_file, simulation_end=simulation_end)
+        return ScenarioResult(
+            map_name=map_name,
+            target_edge=target_edge or "",
+            route_file=route_file,
+            trip_file=trip_file,
+            sumocfg_file=sumocfg_file,
+            command=build_run_command(sumocfg_file),
+            generated_count=0,
+            requested_count=0,
+            target_count=0,
+            mode="empty traffic",
+            stdout="",
+            stderr="",
+            spawn_begin=float(begin),
+            spawn_end=float(end),
+            simulation_end=simulation_end,
+        )
 
     duarouter = shutil.which("duarouter") or "duarouter"
     stdout_parts = []
@@ -2298,12 +2436,12 @@ def generate_congestion_scenario(
     target_count = 0
 
     for attempt, multiplier in enumerate((4, 8, 16, 32), start=1):
-        candidate_count = max(int(vehicle_count) * multiplier, int(vehicle_count) + 20)
+        candidate_count = max(vehicle_count * multiplier, vehicle_count + 20)
         _write_congestion_trips(
             trip_file=trip_file,
             edges=edges,
             target_edge=target_edge,
-            vehicle_count=int(vehicle_count),
+            vehicle_count=vehicle_count,
             begin=float(begin),
             end=float(end),
             spawn_pattern=spawn_pattern,
@@ -2333,12 +2471,12 @@ def generate_congestion_scenario(
         stdout_parts.append(stdout)
         stderr_parts.append(stderr)
 
-        _filter_route_file_by_target(route_file, target_edge, int(vehicle_count))
+        _filter_route_file_by_target(route_file, target_edge, vehicle_count)
         generated_count, target_count = _count_route_vehicles(route_file, target_edge)
-        if generated_count >= int(vehicle_count):
+        if generated_count >= vehicle_count:
             break
 
-    _write_sumocfg(map_name, route_file, sumocfg_file)
+    _write_sumocfg(map_name, route_file, sumocfg_file, simulation_end=simulation_end)
 
     return ScenarioResult(
         map_name=map_name,
@@ -2348,11 +2486,14 @@ def generate_congestion_scenario(
         sumocfg_file=sumocfg_file,
         command=build_run_command(sumocfg_file),
         generated_count=generated_count,
-        requested_count=int(vehicle_count),
+        requested_count=vehicle_count,
         target_count=target_count,
         mode="duarouter via edge",
         stdout="\n".join(stdout_parts),
         stderr="\n".join(stderr_parts),
+        spawn_begin=float(begin),
+        spawn_end=float(end),
+        simulation_end=simulation_end,
     )
 
 
@@ -2361,18 +2502,48 @@ def generate_random_trips_scenario(
     vehicle_count=100,
     begin=0,
     end=120,
+    simulation_end=None,
     seed=42,
     vehicle_type=DEFAULT_VEHICLE_TYPE,
     random_vehicle_type=False,
     vehicle_types=None,
 ):
-    if vehicle_count <= 0:
-        raise ValueError("The number of vehicles must be greater than zero.")
+    """Generate a random-traffic SUMO scenario and its artifacts."""
+    vehicle_count = int(vehicle_count)
+    if vehicle_count < 0:
+        raise ValueError("The number of vehicles cannot be negative.")
 
     trip_file = map_trip_file(map_name)
     route_file = map_route_file(map_name)
     sumocfg_file = map_sumocfg_file(map_name)
     duration = max(float(end) - float(begin), 1.0)
+    simulation_end = max(
+        float(end),
+        float(simulation_end) if simulation_end is not None else float(end),
+    )
+
+    if vehicle_count == 0:
+        _write_empty_routes_file(trip_file)
+        _write_empty_routes_file(route_file)
+        _write_sumocfg(map_name, route_file, sumocfg_file, simulation_end=simulation_end)
+        return ScenarioResult(
+            map_name=map_name,
+            target_edge="",
+            route_file=route_file,
+            trip_file=trip_file,
+            sumocfg_file=sumocfg_file,
+            command=build_run_command(sumocfg_file),
+            generated_count=0,
+            requested_count=0,
+            target_count=0,
+            mode="empty traffic",
+            stdout="",
+            stderr="",
+            spawn_begin=float(begin),
+            spawn_end=float(end),
+            simulation_end=simulation_end,
+        )
+
     period = max(duration / float(vehicle_count), 0.01)
     random_trips = _resolve_sumo_tools_dir() / "randomTrips.py"
 
@@ -2406,13 +2577,13 @@ def generate_random_trips_scenario(
 
     generated_count, _ = _count_route_vehicles(route_file)
     if generated_count > vehicle_count:
-        _trim_route_file(route_file, int(vehicle_count))
+        _trim_route_file(route_file, vehicle_count)
         generated_count, _ = _count_route_vehicles(route_file)
 
     if random_vehicle_type:
         _assign_random_vehicle_types(route_file, int(seed), vehicle_types)
 
-    _write_sumocfg(map_name, route_file, sumocfg_file)
+    _write_sumocfg(map_name, route_file, sumocfg_file, simulation_end=simulation_end)
 
     return ScenarioResult(
         map_name=map_name,
@@ -2422,15 +2593,19 @@ def generate_random_trips_scenario(
         sumocfg_file=sumocfg_file,
         command=build_run_command(sumocfg_file),
         generated_count=generated_count,
-        requested_count=int(vehicle_count),
+        requested_count=vehicle_count,
         target_count=0,
         mode="randomTrips",
         stdout=stdout,
         stderr=stderr,
+        spawn_begin=float(begin),
+        spawn_end=float(end),
+        simulation_end=simulation_end,
     )
 
 
 def build_run_command(sumocfg_file, sumo_gui=True, wait_start_file=None):
+    """Build the command used to launch the synchronization runner."""
     python_executable = resolve_carla_python_executable()
     command = [
         str(python_executable),
@@ -2447,10 +2622,12 @@ def build_run_command(sumocfg_file, sumo_gui=True, wait_start_file=None):
 
 
 def relative_to_sumo_dir(path):
+    """Return the relative a path relative to the active SUMO co-simulation directory."""
     return path.relative_to(SUMO_DIR).as_posix()
 
 
 def is_carla_server_ready(host=DEFAULT_CARLA_HOST, port=DEFAULT_CARLA_PORT, timeout=1.0):
+    """Handle whether the CARLA server is reachable."""
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
@@ -2459,6 +2636,7 @@ def is_carla_server_ready(host=DEFAULT_CARLA_HOST, port=DEFAULT_CARLA_PORT, time
 
 
 def _running_carla_process_entries():
+    """Handle running CARLA processes visible on the host."""
     if psutil is None:
         return []
 
@@ -2519,6 +2697,7 @@ def _running_carla_process_entries():
 
 
 def carla_server_status(version=None):
+    """Handle the current CARLA server status."""
     selected_version = _normalize_carla_version(version or active_carla_version())
     processes = _running_carla_process_entries()
     matched_processes = [item for item in processes if item.get("version")]
@@ -2548,6 +2727,7 @@ def carla_server_status(version=None):
 
 
 def _infer_map_name_from_sumocfg_path(sumocfg_path):
+    """Infer the map name encoded in a `.sumocfg` path."""
     if not sumocfg_path:
         return None
 
@@ -2560,6 +2740,7 @@ def _infer_map_name_from_sumocfg_path(sumocfg_path):
 
 
 def dashboard_synchronization_status():
+    """Handle the status of the dashboard synchronization process."""
     if psutil is None:
         return {
             "running": False,
@@ -2603,6 +2784,7 @@ def dashboard_synchronization_status():
 
 
 def start_carla(log_file=None):
+    """Start CARLA using the active repository installation."""
     if log_file is None:
         log_file = OUTPUT_DIR / "carla_server.log"
     if not CARLA_SCRIPT.exists():
@@ -2625,6 +2807,7 @@ def start_carla(log_file=None):
 
 
 def start_carla_server(version=None, timeout=120, log_file=None, map_name=None):
+    """Start the CARLA server and wait until it is ready."""
     selected_version = set_active_carla_version(version)
     status = carla_server_status(selected_version)
     if status["running"]:
@@ -2651,6 +2834,7 @@ def start_carla_server(version=None, timeout=120, log_file=None, map_name=None):
 
 
 def stop_carla_server(version=None, timeout=15.0):
+    """Stop the CARLA server and wait until it is ready."""
     if psutil is None:
         raise RuntimeError("psutil is required to stop CARLA from the dashboard.")
 
@@ -2725,6 +2909,7 @@ def wait_for_carla_server(
     port=DEFAULT_CARLA_PORT,
     timeout=120,
 ):
+    """Wait for the CARLA server and wait until it is ready."""
     deadline = time.time() + timeout
 
     while time.time() < deadline:
@@ -2747,6 +2932,7 @@ def wait_for_carla_server(
 
 
 def load_carla_map(map_name, log_file=None):
+    """Load the selected CARLA map on the running server."""
     if log_file is None:
         log_file = OUTPUT_DIR / "carla_map.log"
     if not CARLA_CONFIG_SCRIPT.exists():
@@ -2782,6 +2968,7 @@ def load_carla_map(map_name, log_file=None):
 
 
 def prepare_carla(map_name, carla_process=None, timeout=120):
+    """Prepare CARLA using the active repository installation."""
     ensure_carla_python_api_ready()
 
     process = carla_process
@@ -2811,6 +2998,7 @@ def start_synchronization(
     wait_for_start=False,
     log_file=None,
 ):
+    """Start the SUMO-CARLA synchronization runner."""
     carla_log_file = OUTPUT_DIR / "carla_server.log"
     carla_started = False
     map_loaded = False

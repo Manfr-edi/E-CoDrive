@@ -31,6 +31,7 @@ from aev_drivelab.scenario.sumo_route_tools import (  # pylint: disable=wrong-im
 
 
 def configure_carla_version(version):
+    """Configure Python paths and runtime libraries for the selected CARLA version."""
     selected_version = set_active_carla_version(version)
     paths = carla_paths(selected_version)
     sumo_dir = paths["sumo_dir"]
@@ -80,6 +81,7 @@ def configure_carla_version(version):
 
 
 def synchronization_loop(args):
+    """Run the SUMO-CARLA synchronization loop and optional dashboard API."""
     from run_synchronization import (  # pylint: disable=import-outside-toplevel
         BridgeHelper,
         CarlaSimulation,
@@ -147,6 +149,7 @@ def synchronization_loop(args):
 
 
 def build_argparser():
+    """Build the command-line parser for the dashboard synchronization runner."""
     version_choices = available_carla_versions() or [DEFAULT_CARLA_VERSION]
     argparser = argparse.ArgumentParser(description=__doc__)
     argparser.add_argument(

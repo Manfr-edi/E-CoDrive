@@ -1,17 +1,37 @@
 ## Prerequisite
-  1. Download [Carla 0.9.13](https://carla-releases.s3.eu-west-3.amazonaws.com/Linux/CARLA_0.9.13.tar.gz) and extract PythonAPI folder and place it `autoware_mini/CARLA_ROOT/`
 
-## To build autoware image 
-   
-     docker compose build autoware_mini
+- `Docker` with `docker compose`
+- A local `CARLA 0.9.13` installation for the Autoware workflow in the main repository setup
+- X11 access on the host if you want to launch the GUI stack from the container
+
+## Setup script integration
+
+From the repository root, `./scripts/setup_carla.sh` already runs the equivalent of:
+
+```bash
+cd autoware_mini_docker_compose
+docker compose up -d --build autoware_mini
+```
+
+The manual commands below are still useful if you deleted the container or want to manage it without the setup script.
+
+## To build/start autoware manually
+
+```bash
+docker compose up -d --build autoware_mini
+```
 
 ## To start autoware container
 
-    docker compose up -d autoware_mini
+```bash
+docker start autoware_mini
+```
 
 ## Get into autoware_mini container 
 
-    docker exec -it autoware_mini bash 
-    catkin build 
-    .  devel/setup.bash 
-    roslaunch autoware_mini start_carla.launch
+```bash
+docker exec -it autoware_mini bash
+catkin build
+. devel/setup.bash
+roslaunch autoware_mini start_carla.launch
+```

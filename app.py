@@ -3,8 +3,12 @@ import streamlit.components.v1 as components
 import requests
 import pandas as pd
 import folium
+import matplotlib.pyplot as plt
+import seaborn as sns
+import heapq
 import time
 import json
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
@@ -107,6 +111,7 @@ st.set_page_config(layout="wide", initial_sidebar_state="collapsed")
 
 
 def preserve_scroll_position(storage_key="dashboard_scroll_position"):
+    """Keep the dashboard scroll position stable across Streamlit reruns."""
     components.html(
         f"""
         <script>
@@ -236,6 +241,7 @@ st.title("🚗 AEV - DriveLab")
 # =====================================================
 
 def is_backend_alive():
+    """Check whether the dashboard backend API is reachable."""
     try:
         r = requests.get(f"{API_URL}/state", timeout=0.5)
         return r.status_code == 200
@@ -308,6 +314,7 @@ for key, default in {
     "ego_active_start_edge": None,
     "ego_active_end_edge": None,
     "ego_active_via_edge": None,
+    "ego_use_farthest_route": False,
     "ego_config_loaded": False,
     "ego_config_version": None,
     "ego_carla_blueprint": DEFAULT_EGO_BLUEPRINT,
@@ -328,6 +335,7 @@ for key, default in {
     "autoware_active_battery_failure_threshold": 0.0,
     "autoware_start_edge": None,
     "autoware_goal_edge": None,
+    "autoware_use_farthest_route": False,
     "autoware_start_edge_selection": "",
     "autoware_goal_edge_selection": "",
     "autoware_pending_start_edge_selection": None,
@@ -338,6 +346,7 @@ for key, default in {
     "autoware_sync_delay_seconds": 10,
     "autoware_sync_delay_selection": None,
     "autoware_last_launch": None,
+    "traffic_simulation_end": 420.0,
     "monitor_vehicle_selected_id": None,
     "monitor_vehicle_loaded_for": None,
     "live_vehicle_selected_id": None,
@@ -354,6 +363,7 @@ for key, default in {
 
 
 def apply_selected_carla_version():
+    """Apply the CARLA version currently selected in the UI state."""
     versions = available_carla_versions()
     if not versions:
         st.error("No supported CARLA installation found in the project root.")
@@ -491,6 +501,7 @@ apply_selected_carla_version()
 
 
 def format_elapsed(seconds):
+    """Format an elapsed duration for the monitoring UI."""
     if seconds is None:
         return "-"
 
@@ -499,6 +510,7 @@ def format_elapsed(seconds):
 
 
 def extract_state_time(state):
+    """Extract the most useful timestamp from a backend state payload."""
     if not state:
         return None
 
@@ -511,6 +523,7 @@ def extract_state_time(state):
 
 
 def _coerce_float(value):
+    """Convert a value to float when possible."""
     try:
         if value is None or value == "":
             return None
@@ -520,6 +533,7 @@ def _coerce_float(value):
 
 
 def _safe_filename_fragment(value):
+    """Sanitize free-form text so it is safe to use in filenames."""
     text = str(value or "monitoring").strip()
     normalized = [
         char if char.isalnum() or char in {"-", "_", "."} else "_"
@@ -529,13 +543,416 @@ def _safe_filename_fragment(value):
 
 
 def monitoring_output_dir():
+    """Return the output directory used for persisted monitoring sessions."""
     base_dir = current_sumo_dir() or Path(__file__).resolve().parent
     output_dir = Path(base_dir) / "output" / "monitoring"
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
 
 
+def sumo_runtime_output_dir():
+    """Return the SUMO runtime output directory for the selected CARLA installation."""
+    base_dir = current_sumo_dir()
+    if base_dir is None:
+        return Path(__file__).resolve().parent / "output"
+    return Path(base_dir) / "examples" / "output"
+
+
+def _format_number(value, unit="", precision=1):
+    """Format numeric dashboard values consistently."""
+    number = _coerce_float(value)
+    if number is None:
+        return "-"
+    suffix = f" {unit}" if unit else ""
+    return f"{number:.{precision}f}{suffix}"
+
+
+def _plot_axis_dataframe(dataframe, y_column, preferred_x_columns=("sim_time", "elapsed_seconds")):
+    """Build a clean dataframe for a line plot with a stable x axis."""
+    if dataframe is None or dataframe.empty or y_column not in dataframe:
+        return pd.DataFrame(), "Sample", "sample_index"
+
+    plot_df = dataframe.copy()
+    x_label = "Sample"
+    x_column = "sample_index"
+
+    for candidate in preferred_x_columns:
+        if candidate in plot_df and not plot_df[candidate].dropna().empty:
+            x_column = candidate
+            if candidate in {"sim_time", "time_s"}:
+                x_label = "Simulation time [s]"
+            elif candidate == "elapsed_seconds":
+                x_label = "Elapsed time [s]"
+            else:
+                x_label = candidate
+            break
+    else:
+        plot_df[x_column] = range(len(plot_df))
+
+    plot_df = plot_df[[x_column, y_column]].copy()
+    plot_df[x_column] = pd.to_numeric(plot_df[x_column], errors="coerce")
+    plot_df[y_column] = pd.to_numeric(plot_df[y_column], errors="coerce")
+    plot_df = plot_df.dropna(subset=[x_column, y_column])
+    return plot_df, x_label, x_column
+
+
+def build_line_figure(
+    dataframe,
+    x_column,
+    y_column,
+    title,
+    x_label,
+    y_label,
+    color="#2563eb",
+):
+    """Build a Matplotlib/Seaborn line figure for dashboard display or export."""
+    sns.set_theme(style="whitegrid")
+    fig, ax = plt.subplots(figsize=(9, 3.6), dpi=140)
+    sns.lineplot(
+        data=dataframe,
+        x=x_column,
+        y=y_column,
+        ax=ax,
+        color=color,
+        linewidth=2.2,
+        marker="o" if len(dataframe) <= 40 else None,
+        markersize=4,
+    )
+    ax.set_title(title, fontsize=12, fontweight="bold", pad=10)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.grid(True, alpha=0.35)
+    fig.tight_layout()
+    return fig
+
+
+def render_line_figure(
+    container,
+    dataframe,
+    y_column,
+    title,
+    y_label,
+    color="#2563eb",
+    preferred_x_columns=("sim_time", "elapsed_seconds"),
+):
+    """Render a labelled monitoring line chart in a Streamlit placeholder."""
+    plot_df, x_label, x_column = _plot_axis_dataframe(
+        dataframe,
+        y_column,
+        preferred_x_columns=preferred_x_columns,
+    )
+    if plot_df.empty:
+        return None
+
+    fig = build_line_figure(plot_df, x_column, y_column, title, x_label, y_label, color)
+    container.pyplot(fig, clear_figure=True)
+    plt.close(fig)
+    return plot_df
+
+
+def save_line_figure(
+    dataframe,
+    path,
+    y_column,
+    title,
+    y_label,
+    color="#2563eb",
+    preferred_x_columns=("sim_time", "elapsed_seconds"),
+):
+    """Save a labelled line chart to disk and return the path when data exists."""
+    plot_df, x_label, x_column = _plot_axis_dataframe(
+        dataframe,
+        y_column,
+        preferred_x_columns=preferred_x_columns,
+    )
+    if plot_df.empty:
+        return None
+
+    fig = build_line_figure(plot_df, x_column, y_column, title, x_label, y_label, color)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    return path
+
+
+def _read_text(path):
+    """Read a text file while tolerating files that SUMO is still writing."""
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+
+
+def _iter_xml_fragments(path, tag_name):
+    """Yield XML fragments even when the surrounding output document is incomplete."""
+    text = _read_text(path)
+    if not text:
+        return
+
+    open_tag = rf"<{tag_name}(?=[\s>/])[^>]*"
+    pattern = re.compile(
+        rf"{open_tag}/>|{open_tag}>.*?</{tag_name}>",
+        re.DOTALL,
+    )
+    for match in pattern.finditer(text):
+        try:
+            yield ET.fromstring(match.group(0))
+        except ET.ParseError:
+            continue
+
+
+def _float_attribute(element, *attribute_names):
+    """Return the first parseable float attribute from an XML element."""
+    for attribute_name in attribute_names:
+        value = element.get(attribute_name)
+        number = _coerce_float(value)
+        if number is not None:
+            return number
+    return None
+
+
+def _pick_vehicle_id(records_by_vehicle, vehicle_id=None, fallback_vehicle_id=None):
+    """Pick the best vehicle id from an output file grouped by vehicle id."""
+    for candidate in (vehicle_id, fallback_vehicle_id):
+        if candidate is None:
+            continue
+        candidate = str(candidate)
+        if candidate in records_by_vehicle:
+            return candidate
+
+    if len(records_by_vehicle) == 1:
+        return next(iter(records_by_vehicle))
+
+    return None
+
+
+def read_sumo_battery_output(vehicle_id=None, fallback_vehicle_id=None):
+    """Read the battery output curve produced by SUMO for a completed vehicle trip."""
+    path = sumo_runtime_output_dir() / "battery.out.xml"
+    records_by_vehicle = {}
+
+    for timestep in _iter_xml_fragments(path, "timestep") or []:
+        time_s = _float_attribute(timestep, "time")
+        for vehicle in timestep.findall("vehicle"):
+            record_vehicle_id = vehicle.get("id")
+            if not record_vehicle_id:
+                continue
+
+            record = {
+                "time_s": time_s,
+                "battery_charge_wh": _float_attribute(
+                    vehicle,
+                    "actualBatteryCapacity",
+                    "chargeLevel",
+                    "batteryChargeLevel",
+                    "device.battery.chargeLevel",
+                ),
+                "step_consumption_wh": _float_attribute(
+                    vehicle,
+                    "energyConsumed",
+                    "energyConsumedByVehicle",
+                ),
+                "step_charged_wh": _float_attribute(
+                    vehicle,
+                    "energyCharged",
+                    "energyChargedIntoBattery",
+                    "energyChargedInTransit",
+                    "energyChargedStopped",
+                ),
+                "maximum_battery_capacity_wh": _float_attribute(
+                    vehicle,
+                    "maximumBatteryCapacity",
+                    "maxBatteryCapacity",
+                ),
+            }
+            records_by_vehicle.setdefault(str(record_vehicle_id), []).append(record)
+
+    selected_vehicle_id = _pick_vehicle_id(
+        records_by_vehicle,
+        vehicle_id=vehicle_id,
+        fallback_vehicle_id=fallback_vehicle_id,
+    )
+    if selected_vehicle_id is None:
+        return {
+            "path": str(path),
+            "vehicle_id": None,
+            "records": [],
+            "vehicle_ids": sorted(records_by_vehicle),
+            "total_energy_wh": None,
+        }
+
+    records = sorted(
+        records_by_vehicle.get(selected_vehicle_id, []),
+        key=lambda item: item["time_s"] if item["time_s"] is not None else -1.0,
+    )
+    initial_charge = next(
+        (
+            record["battery_charge_wh"]
+            for record in records
+            if record["battery_charge_wh"] is not None
+        ),
+        None,
+    )
+    cumulative_consumption = 0.0
+    has_cumulative_consumption = False
+
+    for record in records:
+        if initial_charge is not None and record["battery_charge_wh"] is not None:
+            record["cumulative_consumption_wh"] = max(
+                0.0,
+                initial_charge - record["battery_charge_wh"],
+            )
+            has_cumulative_consumption = True
+        elif record["step_consumption_wh"] is not None:
+            cumulative_consumption += float(record["step_consumption_wh"])
+            if record["step_charged_wh"] is not None:
+                cumulative_consumption -= float(record["step_charged_wh"])
+            record["cumulative_consumption_wh"] = cumulative_consumption
+            has_cumulative_consumption = True
+        else:
+            record["cumulative_consumption_wh"] = None
+
+    total_energy_wh = next(
+        (
+            record["cumulative_consumption_wh"]
+            for record in reversed(records)
+            if record["cumulative_consumption_wh"] is not None
+        ),
+        None,
+    )
+
+    return {
+        "path": str(path),
+        "vehicle_id": selected_vehicle_id,
+        "records": records if has_cumulative_consumption else [],
+        "vehicle_ids": sorted(records_by_vehicle),
+        "total_energy_wh": total_energy_wh,
+    }
+
+
+def read_sumo_tripinfo_output(vehicle_id=None, fallback_vtypes=None):
+    """Read the completed tripinfo entry for the monitored vehicle."""
+    path = sumo_runtime_output_dir() / "tripinfos.xml"
+    if fallback_vtypes is None:
+        fallback_vtypes = (AUTOWARE_EGO_VTYPE, EGO_SUMO_VTYPE)
+    elif isinstance(fallback_vtypes, str):
+        fallback_vtypes = (fallback_vtypes,)
+
+    tripinfos = []
+
+    for tripinfo in _iter_xml_fragments(path, "tripinfo") or []:
+        data = dict(tripinfo.attrib)
+        emissions = tripinfo.find("emissions")
+        if emissions is not None:
+            for key, value in emissions.attrib.items():
+                data[f"emissions_{key}"] = value
+        tripinfos.append(data)
+
+    selected_tripinfo = None
+    requested_vehicle_id = str(vehicle_id) if vehicle_id is not None else None
+    if requested_vehicle_id:
+        selected_tripinfo = next(
+            (tripinfo for tripinfo in tripinfos if tripinfo.get("id") == requested_vehicle_id),
+            None,
+        )
+
+    if selected_tripinfo is None and fallback_vtypes:
+        matching_vtype = [
+            tripinfo
+            for tripinfo in tripinfos
+            if tripinfo.get("vType") in fallback_vtypes
+        ]
+        if matching_vtype:
+            selected_tripinfo = max(
+                matching_vtype,
+                key=lambda tripinfo: _coerce_float(tripinfo.get("arrival")) or -1.0,
+            )
+
+    if selected_tripinfo is None:
+        carla_tripinfos = [
+            tripinfo
+            for tripinfo in tripinfos
+            if str(tripinfo.get("id", "")).startswith("carla")
+        ]
+        if len(carla_tripinfos) == 1:
+            selected_tripinfo = carla_tripinfos[0]
+
+    return {
+        "path": str(path),
+        "tripinfo": selected_tripinfo,
+        "vehicle_ids": [tripinfo.get("id") for tripinfo in tripinfos if tripinfo.get("id")],
+    }
+
+
+def completed_trip_output(selected_vehicle_id=None):
+    """Find the most likely completed trip output for the current monitoring target."""
+    summary = st.session_state.get("monitoring_summary") or {}
+    last_state = st.session_state.get("last_vehicle_state") or {}
+    candidates = [
+        selected_vehicle_id,
+        summary.get("vehicle_id"),
+        last_state.get("vehicle_id"),
+        st.session_state.get("monitor_vehicle_selected_id"),
+    ]
+
+    seen = set()
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        candidate = str(candidate)
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        output = read_sumo_tripinfo_output(candidate)
+        if output.get("tripinfo"):
+            return output
+
+    return read_sumo_tripinfo_output(None)
+
+
+def mark_summary_arrived_from_tripinfo(tripinfo):
+    """Update the in-memory monitoring summary when SUMO confirms arrival."""
+    if not tripinfo:
+        return
+
+    summary = st.session_state.get("monitoring_summary")
+    if not summary:
+        return
+
+    summary["arrived"] = True
+    summary["reason"] = "destination_reached"
+    summary["terminal_event"] = summary.get("terminal_event") or "destination_reached"
+    summary["distance_remaining_m"] = 0.0
+
+    route_length = _coerce_float(tripinfo.get("routeLength"))
+    if route_length is not None:
+        summary["distance_travelled_m"] = route_length
+
+
+def infer_arrival_from_sumo_tripinfo(vehicle_id=None):
+    """Infer destination arrival from SUMO tripinfo output after a vehicle disappears."""
+    trip_output = completed_trip_output(vehicle_id)
+    tripinfo = trip_output.get("tripinfo")
+    if not tripinfo:
+        return False
+
+    mark_summary_arrived_from_tripinfo(tripinfo)
+    state = dict(st.session_state.last_vehicle_state or {})
+    state.update(
+        {
+            "vehicle_id": tripinfo.get("id") or vehicle_id or state.get("vehicle_id"),
+            "edge": tripinfo.get("arrivalLane") or state.get("edge"),
+            "distance_remaining_m": 0.0,
+            "sim_time": tripinfo.get("arrival"),
+        }
+    )
+    record_dashboard_event("destination_reached", state)
+    return True
+
+
 def append_monitoring_sample(state):
+    """Append a live monitoring sample to the current session buffer."""
     if not state:
         return
 
@@ -572,6 +989,7 @@ def append_monitoring_sample(state):
 
 
 def build_monitoring_summary(reason=None):
+    """Build a summary from the current monitoring session."""
     samples = st.session_state.monitoring_samples
     if not samples:
         return None
@@ -659,6 +1077,7 @@ def build_monitoring_summary(reason=None):
 
 
 def persist_monitoring_session(reason=None):
+    """Persist the current monitoring session to disk."""
     samples = st.session_state.monitoring_samples
     session_token = st.session_state.monitoring_session_token
     if not samples or session_token is None:
@@ -685,6 +1104,20 @@ def persist_monitoring_session(reason=None):
     vehicle_fragment = _safe_filename_fragment(summary.get("vehicle_id"))
     csv_path = output_dir / f"{session_token}_{vehicle_fragment}_monitoring.csv"
     json_path = output_dir / f"{session_token}_{vehicle_fragment}_summary.json"
+    consumption_plot_path = output_dir / f"{session_token}_{vehicle_fragment}_consumption.png"
+
+    saved_consumption_plot = None
+    if "battery_consumed_wh" in dataframe:
+        saved_consumption_plot = save_line_figure(
+            dataframe,
+            consumption_plot_path,
+            "battery_consumed_wh",
+            "Cumulative Energy Consumption",
+            "Energy consumed [Wh]",
+            color="#dc2626",
+        )
+        if saved_consumption_plot is not None:
+            summary["consumption_plot"] = str(saved_consumption_plot)
 
     dataframe.to_csv(csv_path, index=False)
     json_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -694,11 +1127,14 @@ def persist_monitoring_session(reason=None):
         "csv": str(csv_path),
         "json": str(json_path),
     }
+    if saved_consumption_plot is not None:
+        st.session_state.monitoring_export_paths["consumption_plot"] = str(saved_consumption_plot)
     st.session_state.monitoring_saved_session_token = session_token
     return summary
 
 
 def render_saved_monitoring_summary():
+    """Render the most recently saved monitoring summary in the UI."""
     summary = st.session_state.get("monitoring_summary")
     if not summary:
         return
@@ -757,26 +1193,187 @@ def render_saved_monitoring_summary():
         st.caption(f"Saved CSV: `{export_paths['csv']}`")
     if export_paths.get("json"):
         st.caption(f"Saved JSON: `{export_paths['json']}`")
+    if export_paths.get("consumption_plot"):
+        st.caption(f"Saved consumption plot: `{export_paths['consumption_plot']}`")
+        st.image(
+            export_paths["consumption_plot"],
+            caption="Cumulative energy consumption exported from monitoring samples.",
+            use_container_width=True,
+        )
+    if export_paths.get("sumo_consumption_plot"):
+        st.caption(f"Saved SUMO consumption plot: `{export_paths['sumo_consumption_plot']}`")
+        st.image(
+            export_paths["sumo_consumption_plot"],
+            caption="SUMO cumulative energy consumption from battery.out.xml.",
+            use_container_width=True,
+        )
+
+
+def render_sumo_completed_trip_dashboard(selected_vehicle_id=None):
+    """Render SUMO output metrics and energy curve for a completed monitored trip."""
+    summary = st.session_state.get("monitoring_summary") or {}
+    vehicle_id = selected_vehicle_id or summary.get("vehicle_id")
+    trip_output = completed_trip_output(vehicle_id)
+    tripinfo = trip_output.get("tripinfo")
+
+    if not tripinfo:
+        st.info("SUMO trip output will be available after the monitored vehicle completes its route.")
+        st.caption(f"Tripinfo source: `{trip_output['path']}`")
+        return
+
+    battery_output = read_sumo_battery_output(
+        vehicle_id,
+        fallback_vehicle_id=tripinfo.get("id"),
+    )
+    distance_m = _coerce_float(tripinfo.get("routeLength"))
+    duration_s = _coerce_float(tripinfo.get("duration"))
+    avg_speed_kmh = (
+        (distance_m / duration_s) * 3.6
+        if distance_m is not None and duration_s is not None and duration_s > 0
+        else summary.get("speed_avg_kmh")
+    )
+    electricity_abs_wh = _coerce_float(tripinfo.get("emissions_electricity_abs"))
+    total_energy_wh = (
+        battery_output.get("total_energy_wh")
+        if battery_output.get("total_energy_wh") is not None
+        else summary.get("battery_consumed_wh")
+    )
+    if total_energy_wh is None:
+        total_energy_wh = electricity_abs_wh
+
+    average_consumption_wh_per_km = (
+        total_energy_wh / (distance_m / 1000.0)
+        if total_energy_wh is not None and distance_m is not None and distance_m > 0.0
+        else summary.get("average_consumption_wh_per_km")
+    )
+
+    st.write("### SUMO Output Dashboard")
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Total energy", _format_number(total_energy_wh, "Wh"))
+    metric_cols[1].metric("Distance", _format_number(distance_m, "m"))
+    metric_cols[2].metric("Average speed", _format_number(avg_speed_kmh, "km/h"))
+    metric_cols[3].metric(
+        "Avg consumption",
+        _format_number(average_consumption_wh_per_km, "Wh/km"),
+    )
+
+    speed_cols = st.columns(4)
+    speed_cols[0].metric(
+        "Min speed",
+        _format_number(summary.get("speed_min_kmh"), "km/h"),
+    )
+    speed_cols[1].metric(
+        "Max speed",
+        _format_number(summary.get("speed_max_kmh"), "km/h"),
+    )
+    speed_cols[2].metric(
+        "Arrival speed",
+        _format_number(
+            (_coerce_float(tripinfo.get("arrivalSpeed")) or 0.0) * 3.6
+            if _coerce_float(tripinfo.get("arrivalSpeed")) is not None
+            else None,
+            "km/h",
+        ),
+    )
+    speed_cols[3].metric("Duration", format_elapsed(duration_s))
+
+    battery_records = battery_output.get("records") or []
+    if battery_records:
+        curve_df = pd.DataFrame(battery_records)
+        curve_df = curve_df.dropna(subset=["time_s", "cumulative_consumption_wh"])
+        if not curve_df.empty:
+            plot_path = None
+            session_token = st.session_state.get("monitoring_session_token") or "latest"
+            plot_vehicle_id = tripinfo.get("id") or vehicle_id or "vehicle"
+            plot_path = (
+                monitoring_output_dir()
+                / f"{_safe_filename_fragment(session_token)}_"
+                f"{_safe_filename_fragment(plot_vehicle_id)}_sumo_consumption.png"
+            )
+            saved_plot = save_line_figure(
+                curve_df,
+                plot_path,
+                "cumulative_consumption_wh",
+                "SUMO Cumulative Energy Consumption",
+                "Energy consumed [Wh]",
+                color="#b91c1c",
+                preferred_x_columns=("time_s",),
+            )
+            render_line_figure(
+                st,
+                curve_df,
+                "cumulative_consumption_wh",
+                "SUMO Cumulative Energy Consumption",
+                "Energy consumed [Wh]",
+                color="#b91c1c",
+                preferred_x_columns=("time_s",),
+            )
+            if saved_plot is not None:
+                export_paths = st.session_state.get("monitoring_export_paths") or {}
+                export_paths["sumo_consumption_plot"] = str(saved_plot)
+                st.session_state.monitoring_export_paths = export_paths
+                st.caption(f"Saved SUMO consumption plot: `{saved_plot}`")
+    else:
+        available_ids = battery_output.get("vehicle_ids") or []
+        if available_ids:
+            st.warning(
+                "No battery samples matched the completed vehicle. "
+                f"Vehicles in battery output: `{', '.join(available_ids[:8])}`."
+            )
+        else:
+            st.warning("No battery samples are available in `battery.out.xml` for this run.")
+
+    source_cols = st.columns(2)
+    source_cols[0].caption(f"Battery source: `{battery_output['path']}`")
+    source_cols[1].caption(f"Tripinfo source: `{trip_output['path']}`")
+
+
+def render_monitoring_result_tabs(selected_vehicle_id=None):
+    """Render monitoring outputs, adding SUMO results only for completed trips."""
+    summary = st.session_state.get("monitoring_summary")
+    trip_output = completed_trip_output(selected_vehicle_id)
+    tripinfo = trip_output.get("tripinfo")
+
+    if tripinfo:
+        mark_summary_arrived_from_tripinfo(tripinfo)
+        summary = st.session_state.get("monitoring_summary")
+
+    if summary and tripinfo:
+        summary_tab, sumo_tab = st.tabs(["Monitoring Summary", "SUMO Output Dashboard"])
+        with summary_tab:
+            render_saved_monitoring_summary()
+        with sumo_tab:
+            render_sumo_completed_trip_dashboard(selected_vehicle_id)
+    elif tripinfo:
+        render_sumo_completed_trip_dashboard(selected_vehicle_id)
+    elif summary:
+        render_saved_monitoring_summary()
+    else:
+        return
 
 
 def vehicle_setup_step_label():
+    """Return the label for the vehicle-setup step based on the active workflow."""
     if active_carla_version() == "0.9.13":
         return "4. Launch Autoware AV"
     return "3. Spawn SUMO Ego Vehicle"
 
 
 def simulation_step_label():
+    """Return the label for the simulation step based on the active workflow."""
     if active_carla_version() == "0.9.13":
         return "3. Configure Simulation"
     return "4. Run Simulation"
 
 
 def runtime_map_options():
+    """Return the runtime map options available to the current session."""
     allowed_maps = [map_name for map_name in available_maps() if map_name in AUTOWARE_ALLOWED_MAPS]
     return allowed_maps or available_maps()
 
 
 def apply_selected_runtime_map():
+    """Apply the runtime map selected in the dashboard state."""
     maps = runtime_map_options()
     if not maps:
         st.error("No SUMO/CARLA Town is available in the selected installation.")
@@ -815,6 +1412,7 @@ def apply_selected_runtime_map():
 
 
 def ensure_simulation_launch_defaults():
+    """Populate default launch settings for the co-simulation controls."""
     carla_server_ready = is_carla_server_ready()
     if st.session_state.traffic_carla_mode is None:
         st.session_state.traffic_carla_mode = "reuse" if carla_server_ready else "prepare"
@@ -822,6 +1420,7 @@ def ensure_simulation_launch_defaults():
 
 
 def sync_launch_command_for_ui(sumocfg_file):
+    """Format the synchronization launch command for display in the UI."""
     return build_run_command(
         sumocfg_file,
         sumo_gui=bool(st.session_state.traffic_sumo_gui),
@@ -829,6 +1428,7 @@ def sync_launch_command_for_ui(sumocfg_file):
 
 
 def sync_launch_widget_defaults():
+    """Initialize default widget values for the synchronization launcher."""
     if st.session_state.traffic_carla_mode_selection not in {"reuse", "prepare"}:
         st.session_state.traffic_carla_mode_selection = st.session_state.traffic_carla_mode
     if not isinstance(st.session_state.traffic_sumo_gui_selection, bool):
@@ -844,6 +1444,7 @@ def sync_launch_widget_defaults():
 
 
 def effective_autoware_startup_wait_seconds(sumo_gui=None):
+    """Return the Autoware warm-up delay currently in effect."""
     configured_wait = int(st.session_state.autoware_sync_delay_seconds)
     if sumo_gui is None:
         sumo_gui = bool(st.session_state.traffic_sumo_gui)
@@ -851,6 +1452,7 @@ def effective_autoware_startup_wait_seconds(sumo_gui=None):
 
 
 def autoware_launch_sync_state():
+    """Return the UI state associated with Autoware launch synchronization."""
     launch = st.session_state.autoware_last_launch
     if not launch:
         return None
@@ -874,6 +1476,7 @@ def autoware_launch_sync_state():
 
 
 def waiting_for_autoware_sync():
+    """Report whether the co-simulation is waiting for Autoware to start."""
     sync_process = st.session_state.traffic_process
     sync_running = sync_process is not None and sync_process.poll() is None
     if st.session_state.traffic_waiting_for_autoware and not sync_running:
@@ -883,6 +1486,7 @@ def waiting_for_autoware_sync():
 
 
 def clear_waiting_synchronization_state(remove_gate_file=False):
+    """Clear UI state related to a waiting synchronization launch."""
     gate_file = st.session_state.traffic_start_gate_file
     if remove_gate_file and gate_file:
         try:
@@ -894,6 +1498,7 @@ def clear_waiting_synchronization_state(remove_gate_file=False):
 
 
 def release_waiting_synchronization_gate():
+    """Release the file gate that lets a waiting synchronization continue."""
     gate_file = st.session_state.traffic_start_gate_file
     if not gate_file:
         raise RuntimeError("No SUMO start gate is armed for the current session.")
@@ -911,6 +1516,7 @@ def start_dashboard_synchronization_launch(
     sumo_gui,
     wait_for_autoware=False,
 ):
+    """Start the dashboard synchronization process from the UI workflow."""
     carla_server_ready = is_carla_server_ready()
     if carla_mode == "reuse" and not carla_server_ready:
         raise RuntimeError(
@@ -940,6 +1546,7 @@ def start_dashboard_synchronization_launch(
 
 
 def synchronization_success_message(launch, result, carla_mode, sumo_gui):
+    """Build the success message shown after a synchronization launch."""
     if launch.start_gate_file is not None:
         message = (
             f"SUMO/CARLA bridge started, PID {launch.sync_process.pid}, "
@@ -961,6 +1568,7 @@ def synchronization_success_message(launch, result, carla_mode, sumo_gui):
 
 
 def render_carla_step():
+    """Render the dashboard step used to start CARLA and choose the map."""
     selected_version = active_carla_version()
     status = carla_server_status(selected_version)
     sync_process = st.session_state.traffic_process
@@ -1044,6 +1652,7 @@ def render_carla_step():
 
 
 def reset_monitoring_trip_state():
+    """Reset the dashboard state used to track a monitored trip."""
     st.session_state.battery_data = []
     st.session_state.monitoring_samples = []
     st.session_state.monitoring_summary = None
@@ -1060,6 +1669,7 @@ def reset_monitoring_trip_state():
 
 
 def record_dashboard_event(kind, state):
+    """Append a normalized event to the monitoring event log."""
     if st.session_state.vehicle_terminal_event is not None:
         return
 
@@ -1113,6 +1723,7 @@ def record_dashboard_event(kind, state):
 
 
 def update_vehicle_events(state):
+    """Detect and record relevant monitoring events for the current vehicle state."""
     if not state:
         return
 
@@ -1144,9 +1755,6 @@ def update_vehicle_events(state):
         st.session_state.monitoring = False
         return
 
-    if vehicle_id != "ego_vehicle":
-        return
-
     remaining_distance_m = _coerce_float(state.get("distance_remaining_m"))
     if remaining_distance_m is not None and remaining_distance_m <= 1.0:
         record_dashboard_event("destination_reached", state)
@@ -1160,9 +1768,11 @@ def update_vehicle_events(state):
     )
     if destination_edge and edge == destination_edge:
         record_dashboard_event("destination_reached", state)
+        st.session_state.monitoring = False
 
 
 def render_event(event):
+    """Render a single monitoring event in the dashboard."""
     if isinstance(event, dict):
         kind = event.get("kind")
         message = event.get("message", str(event))
@@ -1177,20 +1787,64 @@ def render_event(event):
         st.write(event)
 
 
-@st.fragment(run_every=0.5)
+def poll_monitoring_snapshot(selected_vehicle_id):
+    """Fetch one monitoring sample on explicit user request."""
+    if not selected_vehicle_id:
+        return False
+
+    try:
+        response = requests.get(
+            f"{API_URL}/state",
+            params={"veh_id": selected_vehicle_id},
+            timeout=1,
+        )
+        res = response.json() if response.status_code == 200 else None
+    except Exception:
+        res = None
+
+    if res:
+        st.session_state.latest_monitoring_state = res
+        raw_battery = res.get("battery")
+        try:
+            battery_val = float(raw_battery) if raw_battery is not None else None
+        except (TypeError, ValueError):
+            battery_val = None
+
+        if battery_val is not None:
+            st.session_state.battery_data.append(battery_val)
+        append_monitoring_sample(res)
+        update_vehicle_events(res)
+    elif infer_arrival_from_sumo_tripinfo(selected_vehicle_id):
+        st.session_state.monitoring = False
+        persist_monitoring_session("destination_reached")
+    elif st.session_state.monitoring:
+        st.session_state.latest_monitoring_state = None
+
+    try:
+        events_response = requests.get(f"{API_URL}/events", timeout=1)
+        if events_response.status_code == 200:
+            st.session_state.monitoring_events = events_response.json()
+    except Exception:
+        pass
+
+    st.session_state.last_monitoring_poll = time.monotonic()
+    return bool(res)
+
+
 def render_monitoring():
+    """Render the monitoring step and its live metrics."""
     st.subheader("📊 Monitoring")
 
     if not backend_alive:
         st.warning("Start the co-simulation from the simulation step before monitoring.")
-        render_saved_monitoring_summary()
+        render_monitoring_result_tabs(st.session_state.monitor_vehicle_selected_id)
         return
 
     try:
         live_vehicles = get_live_sumo_vehicles()
     except Exception as exc:
         st.error(f"Could not load vehicles for monitoring: {exc}")
-        render_saved_monitoring_summary()
+        render_monitoring_result_tabs(st.session_state.monitor_vehicle_selected_id)
         return
 
     monitoring_candidates = [
@@ -1199,11 +1853,16 @@ def render_monitoring():
         if vehicle.get("id") == "ego_vehicle" or is_carla_spawned_vehicle(vehicle)
     ]
     if not monitoring_candidates:
-        if st.session_state.monitoring:
+        check_clicked = st.button("Check SUMO output", use_container_width=True)
+        if st.session_state.monitoring or check_clicked:
+            reason = "vehicle_unavailable"
+            if infer_arrival_from_sumo_tripinfo(st.session_state.monitor_vehicle_selected_id):
+                reason = "destination_reached"
             st.session_state.monitoring = False
-            persist_monitoring_session("vehicle_unavailable")
+            if st.session_state.monitoring_session_token:
+                persist_monitoring_session(reason)
         st.info("No ego or CARLA-spawned SUMO vehicle is currently active.")
-        render_saved_monitoring_summary()
+        render_monitoring_result_tabs(st.session_state.monitor_vehicle_selected_id)
         return
 
     candidate_ids = [vehicle["id"] for vehicle in monitoring_candidates]
@@ -1215,11 +1874,30 @@ def render_monitoring():
     current_vehicle_id = st.session_state.monitor_vehicle_selected_id
 
     if current_vehicle_id not in candidate_ids:
+        if current_vehicle_id and st.session_state.monitoring:
+            reason = "vehicle_unavailable"
+            if infer_arrival_from_sumo_tripinfo(current_vehicle_id):
+                reason = "destination_reached"
+            st.session_state.monitoring = False
+            persist_monitoring_session(reason)
+            st.info("The monitored vehicle is no longer active in SUMO.")
+            render_monitoring_result_tabs(current_vehicle_id)
+            return
+
+        if current_vehicle_id and st.session_state.monitoring_summary:
+            if st.button("Check SUMO output", use_container_width=True):
+                infer_arrival_from_sumo_tripinfo(current_vehicle_id)
+            st.info("The monitored vehicle is no longer active in SUMO.")
+            render_monitoring_result_tabs(current_vehicle_id)
+            return
+
         current_vehicle_id = preferred_vehicle_id
     elif (
         current_vehicle_id == "ego_vehicle"
         and preferred_vehicle_id
         and preferred_vehicle_id != current_vehicle_id
+        and not st.session_state.monitoring
+        and not st.session_state.monitoring_summary
     ):
         current_vehicle_id = preferred_vehicle_id
 
@@ -1232,25 +1910,30 @@ def render_monitoring():
         reset_monitoring_trip_state()
         st.session_state.monitor_vehicle_loaded_for = selected_vehicle_id
 
-    refresh_rate = st.slider(
-        "Refresh rate (ms)",
-        min_value=500,
-        max_value=5000,
-        step=500,
-        key="refresh_rate",
-    )
+    control_cols = st.columns(3)
 
-    col1, col2 = st.columns(2)
-
-    with col1:
+    with control_cols[0]:
         if st.button("Start Monitoring", disabled=st.session_state.monitoring):
             reset_monitoring_trip_state()
             st.session_state.monitoring = True
             st.session_state.monitoring_session_token = datetime.now().strftime("%Y%m%d_%H%M%S")
             st.session_state.last_monitoring_poll = 0.0
             st.session_state.monitoring_started_at = time.time()
+            poll_monitoring_snapshot(selected_vehicle_id)
 
-    with col2:
+    with control_cols[1]:
+        update_clicked = st.button(
+            "Update Data & Charts",
+            disabled=not st.session_state.monitoring and not st.session_state.monitoring_summary,
+            use_container_width=True,
+        )
+        if update_clicked:
+            if st.session_state.monitoring:
+                poll_monitoring_snapshot(selected_vehicle_id)
+            else:
+                infer_arrival_from_sumo_tripinfo(selected_vehicle_id)
+
+    with control_cols[2]:
         if st.button("Stop Monitoring", disabled=not st.session_state.monitoring):
             st.session_state.monitoring = False
             persist_monitoring_session("manual_stop")
@@ -1261,60 +1944,32 @@ def render_monitoring():
     battery_event_placeholder = st.empty()
     event_placeholder = st.empty()
 
-    if st.session_state.monitoring:
-        now = time.monotonic()
-        elapsed_ms = (now - st.session_state.last_monitoring_poll) * 1000
-
-        if elapsed_ms >= refresh_rate:
-            try:
-                response = requests.get(
-                    f"{API_URL}/state",
-                    params={"veh_id": selected_vehicle_id},
-                    timeout=1,
-                )
-                res = response.json() if response.status_code == 200 else None
-            except Exception:
-                res = None
-
-            if res:
-                st.session_state.latest_monitoring_state = res
-                raw_battery = res.get("battery")
-                try:
-                    battery_val = float(raw_battery) if raw_battery is not None else None
-                except (TypeError, ValueError):
-                    battery_val = None
-
-                if battery_val is not None:
-                    st.session_state.battery_data.append(battery_val)
-                append_monitoring_sample(res)
-                update_vehicle_events(res)
-
-            try:
-                st.session_state.monitoring_events = requests.get(
-                    f"{API_URL}/events",
-                    timeout=1,
-                ).json()
-            except Exception:
-                pass
-
-            st.session_state.last_monitoring_poll = now
-
     if st.session_state.monitoring_session_token and not st.session_state.monitoring:
         terminal_event = st.session_state.vehicle_terminal_event or {}
         persist_monitoring_session(terminal_event.get("kind") or "stopped")
 
-    if st.session_state.battery_data:
-        df = pd.DataFrame(st.session_state.battery_data, columns=["battery"])
-        chart_placeholder.line_chart(df)
     if st.session_state.monitoring_samples:
         monitoring_df = pd.DataFrame(st.session_state.monitoring_samples)
         if "battery_wh" in monitoring_df and not monitoring_df["battery_wh"].dropna().empty:
+            render_line_figure(
+                chart_placeholder,
+                monitoring_df,
+                "battery_wh",
+                "Battery Level During Trip",
+                "Battery charge [Wh]",
+                color="#2563eb",
+            )
             battery_initial = monitoring_df["battery_wh"].dropna().iloc[0]
             monitoring_df["battery_consumed_wh"] = monitoring_df["battery_wh"].apply(
                 lambda value: battery_initial - value if pd.notna(value) else None
             )
-            consumption_chart_placeholder.line_chart(
-                monitoring_df[["battery_consumed_wh"]]
+            render_line_figure(
+                consumption_chart_placeholder,
+                monitoring_df,
+                "battery_consumed_wh",
+                "Cumulative Energy Consumption",
+                "Energy consumed [Wh]",
+                color="#dc2626",
             )
 
     res = st.session_state.latest_monitoring_state
@@ -1360,10 +2015,11 @@ def render_monitoring():
         else:
             st.write("No events yet.")
 
-    render_saved_monitoring_summary()
+    render_monitoring_result_tabs(selected_vehicle_id)
 
 
 def get_network():
+    """Load the active road network for map interactions."""
     if "network" not in st.session_state:
         res = requests.get(f"{API_URL}/network", timeout=2).json()
         st.session_state.network = res["edges"]
@@ -1372,20 +2028,132 @@ def get_network():
 
 
 def to_map_coords(x, y):
+    """Convert SUMO coordinates to the map coordinates used by the UI."""
     return [y, x]
+
+
+def _edge_length(edge):
+    """Return a positive length estimate for an edge."""
+    try:
+        length = float(edge.length)
+    except (TypeError, ValueError):
+        length = 0.0
+
+    if length > 0:
+        return length
+
+    total = 0.0
+    for start, end in zip(edge.shape, edge.shape[1:]):
+        total += ((end[0] - start[0]) ** 2 + (end[1] - start[1]) ** 2) ** 0.5
+    return total
+
+
+def _farthest_geometric_edge_pair(edges):
+    """Return the directed edge pair with the largest straight-line span."""
+    usable_edges = [edge for edge in edges if len(edge.shape) >= 2]
+    best_start = None
+    best_end = None
+    best_distance_sq = -1.0
+
+    for start_edge in usable_edges:
+        start_x, start_y = start_edge.shape[0]
+        for end_edge in usable_edges:
+            if end_edge.edge_id == start_edge.edge_id:
+                continue
+
+            end_x, end_y = end_edge.shape[-1]
+            distance_sq = (start_x - end_x) ** 2 + (start_y - end_y) ** 2
+            if distance_sq > best_distance_sq:
+                best_start = start_edge
+                best_end = end_edge
+                best_distance_sq = distance_sq
+
+    if best_start is None or best_end is None:
+        return None, None, None
+
+    return best_start.edge_id, best_end.edge_id, best_distance_sq ** 0.5
+
+
+def farthest_directed_edge_pair(edges):
+    """Return the reachable directed edge pair with the largest estimated route length."""
+    usable_edges = [
+        edge
+        for edge in edges
+        if len(edge.shape) >= 2 and edge.from_node and edge.to_node
+    ]
+    if len(usable_edges) < 2:
+        return _farthest_geometric_edge_pair(edges)
+
+    adjacency = {}
+    for edge in usable_edges:
+        adjacency.setdefault(edge.from_node, []).append((edge.to_node, _edge_length(edge)))
+
+    distance_cache = {}
+
+    def shortest_distances(source_node):
+        """Run Dijkstra from a node over the directed edge graph."""
+        if source_node in distance_cache:
+            return distance_cache[source_node]
+
+        distances = {source_node: 0.0}
+        heap = [(0.0, source_node)]
+        while heap:
+            current_distance, node = heapq.heappop(heap)
+            if current_distance > distances.get(node, float("inf")):
+                continue
+
+            for next_node, edge_length in adjacency.get(node, []):
+                candidate_distance = current_distance + edge_length
+                if candidate_distance < distances.get(next_node, float("inf")):
+                    distances[next_node] = candidate_distance
+                    heapq.heappush(heap, (candidate_distance, next_node))
+
+        distance_cache[source_node] = distances
+        return distances
+
+    best_start = None
+    best_end = None
+    best_route_length = -1.0
+    edge_lengths = {edge.edge_id: _edge_length(edge) for edge in usable_edges}
+
+    for start_edge in usable_edges:
+        distances = shortest_distances(start_edge.to_node)
+        start_length = edge_lengths[start_edge.edge_id]
+
+        for end_edge in usable_edges:
+            if end_edge.edge_id == start_edge.edge_id:
+                continue
+
+            connector_length = distances.get(end_edge.from_node)
+            if connector_length is None:
+                continue
+
+            route_length = start_length + connector_length + edge_lengths[end_edge.edge_id]
+            if route_length > best_route_length:
+                best_start = start_edge
+                best_end = end_edge
+                best_route_length = route_length
+
+    if best_start is None or best_end is None:
+        return _farthest_geometric_edge_pair(edges)
+
+    return best_start.edge_id, best_end.edge_id, best_route_length
 
 
 @st.cache_data(show_spinner=False)
 def get_offline_edges(map_name):
+    """Load cached edge data for the selected map."""
     return read_sumo_edges(map_name)
 
 
 @st.cache_data(show_spinner=False)
 def get_sumo_vtypes():
+    """Return the available SUMO vehicle types for the active setup."""
     return available_vehicle_types()
 
 
 def edge_select_index(options, current_value):
+    """Return the select-box index matching the current edge selection."""
     try:
         return options.index(current_value)
     except ValueError:
@@ -1393,6 +2161,7 @@ def edge_select_index(options, current_value):
 
 
 def pick_auto_edge(edges, excluded=None, preferred=()):
+    """Pick a fallback edge from a list using exclusion and preference hints."""
     excluded = {edge_id for edge_id in (excluded or []) if edge_id}
     edge_by_id = {edge.edge_id: edge for edge in edges}
 
@@ -1408,6 +2177,7 @@ def pick_auto_edge(edges, excluded=None, preferred=()):
 
 
 def generated_route_hints(route_file, target_edge):
+    """Summarize the key properties of a generated route file."""
     if not route_file or not target_edge:
         return None, None
 
@@ -1435,6 +2205,7 @@ def generated_route_hints(route_file, target_edge):
 
 
 def apply_vtype_config_to_state(prefix, config):
+    """Copy a vehicle-type configuration into Streamlit session state."""
     attribute_defaults, parameter_defaults = ego_model_defaults(config["emission_model"])
     merged_attributes = dict(attribute_defaults)
     merged_attributes.update(config.get("attributes") or {})
@@ -1459,6 +2230,7 @@ def apply_vtype_config_to_state(prefix, config):
 
 
 def initialize_ego_config_state():
+    """Initialize dashboard state for the SUMO ego vehicle configuration."""
     current_version = active_carla_version()
     if (
         st.session_state.ego_config_loaded
@@ -1477,6 +2249,7 @@ def initialize_ego_config_state():
 
 
 def initialize_autoware_ego_config_state():
+    """Initialize dashboard state for the Autoware ego vehicle configuration."""
     current_version = active_carla_version()
     if (
         st.session_state.autoware_ego_config_loaded
@@ -1494,6 +2267,7 @@ def initialize_autoware_ego_config_state():
 
 
 def reset_vtype_model_state(prefix, emission_model):
+    """Reset emission-model-specific vehicle-type values in session state."""
     attributes, parameters = ego_model_defaults(emission_model)
 
     for key, value in attributes.items():
@@ -1503,6 +2277,7 @@ def reset_vtype_model_state(prefix, emission_model):
 
 
 def bounded_float(value, minimum, maximum):
+    """Clamp a numeric value to the requested range."""
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -1512,6 +2287,7 @@ def bounded_float(value, minimum, maximum):
 
 
 def parameter_input_grid(values, key_prefix, text_area_keys=()):
+    """Render editable vehicle parameter fields in a compact grid."""
     text_area_keys = set(text_area_keys)
     result = {}
     normal_items = [(key, value) for key, value in values.items() if key not in text_area_keys]
@@ -1569,6 +2345,7 @@ def parameter_input_grid(values, key_prefix, text_area_keys=()):
 
 
 def render_ego_vehicle_config():
+    """Render the SUMO ego-vehicle configuration editor."""
     initialize_ego_config_state()
 
     carla_vtypes = available_carla_vehicle_types()
@@ -1645,6 +2422,7 @@ def render_ego_vehicle_config():
 
 
 def render_autoware_ego_vtype_editor():
+    """Render the Autoware ego-vehicle configuration editor."""
     initialize_autoware_ego_config_state()
 
     st.subheader("🔧 Ego vType")
@@ -1766,6 +2544,28 @@ def render_autoware_ego_vtype_editor():
         "Select the route exactly like in the scenario step: click the map, choose the edge direction, "
         "or reuse the current congestion/source/destination edges with the quick actions below."
     )
+    (
+        farthest_autoware_start,
+        farthest_autoware_goal,
+        farthest_autoware_distance,
+    ) = farthest_directed_edge_pair(autoware_edges)
+    if st.checkbox(
+        "Auto-select farthest Autoware route",
+        key="autoware_use_farthest_route",
+        disabled=not (farthest_autoware_start and farthest_autoware_goal),
+        help=(
+            "Selects the two directed edges with the largest reachable path length "
+            "on the current map. Disable it to edit the route manually."
+        ),
+    ):
+        st.session_state.autoware_start_edge = farthest_autoware_start
+        st.session_state.autoware_goal_edge = farthest_autoware_goal
+        st.caption(
+            "Auto route: "
+            f"`{farthest_autoware_start}` -> `{farthest_autoware_goal}` "
+            f"({farthest_autoware_distance:.1f} m estimated path length)."
+        )
+
     all_x = [point[0] for edge in autoware_edges for point in edge.shape]
     all_y = [point[1] for edge in autoware_edges for point in edge.shape]
     center_x = (min(all_x) + max(all_x)) / 2
@@ -1990,9 +2790,7 @@ def render_autoware_ego_vtype_editor():
             "is released immediately when you click `Run Autoware`."
         )
     else:
-        st.caption(
-            f"The configured Autoware startup wait is `{autoware_delay}s` and starts when you click `Run Autoware`."
-        )
+        st.caption(f"Autoware startup wait is `{autoware_delay}s`.")
 
     action_cols = st.columns(2)
     with action_cols[0]:
@@ -2158,6 +2956,7 @@ def render_autoware_ego_vtype_editor():
 
 
 def get_live_sumo_vehicles():
+    """Fetch the live SUMO vehicles exposed by the dashboard backend."""
     response = requests.get(f"{API_URL}/vehicles", timeout=2)
     if response.status_code != 200:
         raise RuntimeError(response.text)
@@ -2165,12 +2964,14 @@ def get_live_sumo_vehicles():
 
 
 def is_carla_spawned_vehicle(vehicle):
+    """Return whether a live vehicle was spawned from the CARLA side."""
     vehicle_id = str(vehicle.get("id", ""))
     type_id = str(vehicle.get("type_id", ""))
     return vehicle_id.startswith("carla") or type_id == "vehicle.lexus.utlexus"
 
 
 def vehicle_display_label(vehicle):
+    """Build a human-readable label for a live vehicle."""
     battery_state = "battery" if vehicle.get("has_battery_device") else "no battery"
     return (
         f"{vehicle.get('id', '-')} | type={vehicle.get('type_id', '-')} | "
@@ -2179,6 +2980,7 @@ def vehicle_display_label(vehicle):
 
 
 def preferred_monitoring_vehicle_id(vehicles):
+    """Pick the default vehicle to monitor from the available live vehicles."""
     for vehicle in vehicles:
         if is_carla_spawned_vehicle(vehicle):
             return vehicle["id"]
@@ -2191,6 +2993,7 @@ def preferred_monitoring_vehicle_id(vehicles):
 
 
 def fetch_live_vehicle_vtype_config(veh_id):
+    """Fetch the current live vType configuration for a vehicle."""
     encoded_vehicle_id = quote(str(veh_id), safe="")
     response = requests.get(f"{API_URL}/vehicle/{encoded_vehicle_id}", timeout=2)
     if response.status_code != 200:
@@ -2199,6 +3002,7 @@ def fetch_live_vehicle_vtype_config(veh_id):
 
 
 def initialize_live_vehicle_config_state(veh_id):
+    """Initialize session state for editing a live vehicle type."""
     current_version = active_carla_version()
     if (
         st.session_state.live_vehicle_config_loaded_for == veh_id
@@ -2213,6 +3017,7 @@ def initialize_live_vehicle_config_state(veh_id):
 
 
 def render_live_vehicle_vtype_config(veh_id):
+    """Render the editor for a live vehicle vType."""
     initialize_live_vehicle_config_state(veh_id)
 
     current_type_id = st.session_state.get("live_vehicle_sumo_vtype", "")
@@ -2290,6 +3095,7 @@ def resolve_ego_route_from_congestion(
     traffic_source_edge=None,
     traffic_destination_edge=None,
 ):
+    """Build ego routing choices starting from the selected congestion edge."""
     start_edge = selected_start
     end_edge = selected_end
     via_edge = None
@@ -2341,6 +3147,7 @@ def resolve_ego_route_from_congestion(
 
 
 def render_traffic_scenario(show_runner=True):
+    """Render the scenario-generation step and its routing tools."""
     st.subheader("🚦 Traffic Scenario")
 
     maps = available_maps()
@@ -2543,20 +3350,31 @@ def render_traffic_scenario(show_runner=True):
 
 
 
-    param_cols = st.columns(4)
+    param_cols = st.columns(5)
     with param_cols[0]:
         vehicle_count = st.number_input(
             "Vehicles Number",
-            min_value=1,
+            min_value=0,
             max_value=5000,
             value=150,
             step=10,
+            help="Set 0 to generate an empty SUMO traffic scenario and run only the ego vehicle.",
         )
     with param_cols[1]:
         begin = st.number_input("Start spawn at t[s]", min_value=0.0, value=0.0, step=1.0)
     with param_cols[2]:
         end = st.number_input("Stop spawn at t[s]", min_value=0.0, value=120.0, step=1.0)
     with param_cols[3]:
+        if float(st.session_state.traffic_simulation_end) < float(end):
+            st.session_state.traffic_simulation_end = float(end)
+        simulation_end = st.number_input(
+            "Simulation end t[s]",
+            min_value=float(end),
+            step=10.0,
+            key="traffic_simulation_end",
+            help="Written as `<time><end>` in the generated custom SUMO configuration.",
+        )
+    with param_cols[4]:
         seed = st.number_input("Seed", min_value=0, max_value=999999, value=42, step=1)
 
     spawn_pattern = st.selectbox(
@@ -2593,7 +3411,7 @@ def render_traffic_scenario(show_runner=True):
             "generate random traffic but only keep the routes that pass through the congested edge."
         )
 
-    can_generate = mode == "Random Traffic" or bool(target_selection)
+    can_generate = int(vehicle_count) == 0 or mode == "Random Traffic" or bool(target_selection)
     if not can_generate:
         st.warning("Select the edge to congestion.")
 
@@ -2607,6 +3425,7 @@ def render_traffic_scenario(show_runner=True):
                     vehicle_count=int(vehicle_count),
                     begin=float(begin),
                     end=float(end),
+                    simulation_end=float(simulation_end),
                     spawn_pattern=spawn_pattern,
                     source_edge=source_selection or None,
                     seed=int(seed),
@@ -2620,6 +3439,7 @@ def render_traffic_scenario(show_runner=True):
                     vehicle_count=int(vehicle_count),
                     begin=float(begin),
                     end=float(end),
+                    simulation_end=float(simulation_end),
                     seed=int(seed),
                     vehicle_type=vehicle_type,
                     random_vehicle_type=random_vehicle_type,
@@ -2636,10 +3456,14 @@ def render_traffic_scenario(show_runner=True):
     result = st.session_state.traffic_generation_result
     if result:
         st.write("### Output")
-        metric_cols = st.columns(3)
+        metric_cols = st.columns(4)
         metric_cols[0].metric("Route Vehicles", result.generated_count)
         metric_cols[1].metric("crossing edge", result.target_count)
         metric_cols[2].metric("Tool", result.mode)
+        metric_cols[3].metric(
+            "Simulation end",
+            f"{getattr(result, 'simulation_end', 0.0):.0f} s",
+        )
 
         st.write("Route file:", str(result.route_file))
         st.write("Trips file:", str(result.trip_file))
@@ -2654,6 +3478,7 @@ def render_traffic_scenario(show_runner=True):
 
 
 def render_simulation_runner(result=None):
+    """Render the co-simulation launch controls and runtime status."""
     if result is None:
         result = st.session_state.traffic_generation_result
 
@@ -2683,7 +3508,8 @@ def render_simulation_runner(result=None):
     if autoware_workflow:
         st.info(
             "For the Autoware workflow, this step starts the SUMO/CARLA bridge in standby. "
-            "Then use step 4 to launch Autoware; after the warm-up, the simulation is released automatically."
+            "Then use step 4 to launch Autoware; after the startup wait, the dashboard "
+            "releases SUMO/CARLA."
         )
         if waiting_for_autoware_sync():
             st.success(
@@ -2719,7 +3545,7 @@ def render_simulation_runner(result=None):
             key="autoware_sync_delay_selection",
             disabled=bool(sumo_gui),
             help=(
-                "Delay applied in step 4 before the co-simulation process is started. "
+                "Warm-up delay used only when Autoware is launched before releasing SUMO. "
                 "Disabled when SUMO GUI is enabled."
             ),
         )
@@ -2804,6 +3630,7 @@ def render_simulation_runner(result=None):
 
 
 def render_setup():
+    """Render the full dashboard workflow and shared setup state."""
     if not backend_alive:
         st.warning(
             "Backend is not active: you can configure the ego route and vType, "
@@ -2832,6 +3659,23 @@ def render_setup():
 
     st.subheader("🗺️ Network Map (click to select)")
     st.caption(f"Ego map: {map_name}")
+    farthest_start_edge, farthest_end_edge, farthest_distance = farthest_directed_edge_pair(edges)
+    if st.checkbox(
+        "Auto-select farthest ego route",
+        key="ego_use_farthest_route",
+        disabled=not (farthest_start_edge and farthest_end_edge),
+        help=(
+            "Selects the two directed edges with the largest reachable path length "
+            "on the current map. Disable it to edit start/end manually."
+        ),
+    ):
+        st.session_state.start_edge = farthest_start_edge
+        st.session_state.end_edge = farthest_end_edge
+        st.caption(
+            "Auto route: "
+            f"`{farthest_start_edge}` -> `{farthest_end_edge}` "
+            f"({farthest_distance:.1f} m estimated path length)."
+        )
 
     all_x = [point[0] for edge in edges for point in edge.shape]
     all_y = [point[1] for edge in edges for point in edge.shape]
@@ -3149,6 +3993,7 @@ def render_setup():
 
 
 def render_live_vehicle_editor():
+    """Render the UI used to inspect and edit live SUMO vehicles."""
     st.subheader("🔧 Live Vehicle vType")
 
     if not backend_alive:

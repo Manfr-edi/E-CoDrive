@@ -33,10 +33,10 @@ Install the Python dependencies from the repository root:
 pip install -r requirements.txt
 ```
 
-If SUMO is installed in the default Ubuntu path, the project should pick it up automatically through `/usr/share/sumo`. If needed, export it explicitly:
+If SUMO is installed in the default Ubuntu path, the project should pick it up automatically through `/usr/share/sumo`. Set `SUMO_HOME` manually only when SUMO is installed elsewhere:
 
 ```bash
-export SUMO_HOME=/usr/share/sumo
+export SUMO_HOME=/path/to/sumo
 ```
 
 If the CARLA Python API bundled with your CARLA install is not compatible with the interpreter used to start the dashboard, set a dedicated interpreter before launching the project:
@@ -53,6 +53,8 @@ export CARLA_PYTHON_0_9_15=/path/to/python
 ```
 
 That interpreter must be able to import at least `carla`, `flask`, `lxml`, `traci`, `sumolib`, and `setuptools`.
+
+These environment variables are runtime conditions, not persistent setup steps: `./scripts/setup_carla.sh` does not export them into your shell.
 
 ### CARLA Setup
 
@@ -80,6 +82,8 @@ Once at least one CARLA installation is in place, run:
 
 The script bootstraps the selected CARLA installation(s), installs the project-specific SUMO/CARLA files, writes the vehicle type files, patches the runtime-critical SUMO integration files, and imports the UT Lexus asset required by the Autoware workflow.
 
+If `CARLA 0.9.13` is part of the setup and Docker Compose is available, the script also builds and starts the `autoware_mini` container automatically.
+
 To bootstrap a specific installation:
 
 ```bash
@@ -90,18 +94,40 @@ To bootstrap a specific installation:
 
 The Autoware workflow requires `CARLA 0.9.13` and an `autoware_mini` Docker container.
 
-First build the container:
+When you run `./scripts/setup_carla.sh` with a local `CARLA 0.9.13` installation present, the script also prepares the Docker side by running the equivalent of:
 
 ```bash
 cd autoware_mini_docker_compose
-docker compose up --build
+docker compose up -d --build autoware_mini
 ```
 
-If the image/container is already built, start it again with:
+Keep the manual commands below as a fallback if the container was deleted, if you want to rebuild it explicitly, or if you prefer not to use the setup script.
+
+Build and start the container manually:
+
+```bash
+cd autoware_mini_docker_compose
+docker compose up -d --build autoware_mini
+```
+
+If the image/container is already built and only needs to be started again:
 
 ```bash
 docker start autoware_mini
 ```
+
+
+## 🚀 Framework Usage
+
+### Typical Local Startup Sequence
+
+1. Install system requirements: Python `3.8`, Docker, Docker Compose, SUMO `1.26`.
+2. Install Python packages with `pip install -r requirements.txt`.
+3. Download and extract `CARLA 0.9.13` and/or `CARLA 0.9.15` into `carla/`.
+4. Run `./scripts/setup_carla.sh`.
+5. If using Autoware, make sure Docker Compose is available so the setup script can also build/start `autoware_mini`; otherwise run the manual Docker commands from `autoware_mini_docker_compose/`.
+6. Start the dashboard with `streamlit run app.py`.
+
 
 ### Startup
 
@@ -123,16 +149,7 @@ Then open the dashboard in the browser, for example:
 http://127.0.0.1:8501
 ```
 
-### Typical Local Startup Sequence
 
-1. Install system requirements: Python `3.8`, Docker, Docker Compose, SUMO `1.26`.
-2. Install Python packages with `pip install -r requirements.txt`.
-3. Download and extract `CARLA 0.9.13` and/or `CARLA 0.9.15` into `carla/`.
-4. Run `./scripts/setup_carla.sh`.
-5. If using Autoware, build/start the Docker container from `autoware_mini_docker_compose/`.
-6. Start the dashboard with `streamlit run app.py`.
-
-## 🚀 Basic Usage
 
 The dashboard is organized as an execution stepper. Each step corresponds to one phase of the experimental workflow.
 
@@ -266,18 +283,6 @@ Main options:
 - `Start Monitoring`: clears previous samples and starts a new session.
 - `Stop Monitoring`: stops polling and persists the session summary.
 
-## 🖼️ Suggested Figures
-
-For a tool-paper artifact, the following screenshots are useful when available:
-
-| Figure | Suggested content |
-| --- | --- |
-| `docs/images/01-start-carla.png` | CARLA version and Town selection in the `Start CARLA` step. |
-| `docs/images/02-traffic-scenario.png` | Congestion edge selected on the SUMO network map. |
-| `docs/images/03-ego-route.png` | Ego start/end route with the congested edge highlighted. |
-| `docs/images/04-simulation.png` | Co-simulation process running with SUMO GUI enabled. |
-| `docs/images/05-monitoring.png` | Battery, consumption, speed, edge, and event monitoring. |
-
 ## 📁 Generated Files
 
 The dashboard writes generated scenario files to the selected CARLA installation:
@@ -302,46 +307,46 @@ Monitoring exports are written under:
 <carla_install_dir>/Co-Simulation/Sumo/examples/output/monitoring/
 ```
 
-## 🧩 Implementation Structure
-
-Only the Streamlit entry point remains at repository root:
+## 🧩 Repository Structure
 
 ```text
-app.py
+AEV-DriveLab/
+├── app.py                                  # Streamlit dashboard entry point and workflow stepper.
+├── requirements.txt                        # Python dependencies for the dashboard and helpers.
+├── aev_drivelab/                           # Main Python package.
+│   ├── scenario/
+│   │   └── sumo_route_tools.py             # SUMO route generation, map helpers, CARLA discovery, and Autoware launch helpers.
+│   ├── cosimulation/
+│   │   ├── backend_bridge.py               # Starts and manages the dashboard co-simulation backend process.
+│   │   ├── dashboard_backend.py            # Flask API exposed to the Streamlit dashboard during co-simulation.
+│   │   ├── dashboard_sumo.py               # Ego vehicle management, monitoring data extraction, and battery handling.
+│   │   └── run_dashboard_synchronization.py # Dashboard-specific SUMO/CARLA synchronization runner.
+│   └── simulation/
+│       ├── config.py                       # Shared simulation configuration values.
+│       ├── ego_controller.py               # Legacy helpers for ego-vehicle control.
+│       └── simulation_backend.py           # Legacy direct-SUMO backend kept separate from the dashboard path.
+├── scripts/
+│   └── setup_carla.sh                      # Bootstraps CARLA, installs project patches/templates, and starts Autoware when needed.
+├── bootstrap_templates/                    # Version-specific files copied into vanilla CARLA installs.
+│   ├── 0.9.13/                             # Templates used for the Autoware workflow.
+│   ├── 0.9.15/                             # Templates used for the SUMO ego-vehicle workflow.
+│   └── common/                             # Shared patched SUMO/CARLA integration files.
+├── carla/                                  # Fill this folder with the extracted CARLA distributions used by the project.
+│   ├── (TO ADD) CARLA_0.9.13/              # Required for the Autoware-based workflow.
+│   ├── (TO ADD) CARLA_0.9.15/              # Required for the SUMO-managed ego vehicle workflow.
+│   └── README.txt                          # Short reminder about which CARLA versions are expected here.
+└── autoware_mini_docker_compose/           # Docker setup used to build and run the `autoware_mini` container.
+    ├── docker-compose.yml                  # Compose definition for the Autoware container.
+    ├── README.md                           # Manual container management instructions and fallback commands.
+    ├── missing_commands.txt                # Notes about commands expected inside the Autoware environment.
+    └── autoware_mini/
+        └── Dockerfile                      # Image definition for the Autoware container.
 ```
 
-The implementation is organized by functionality:
+Notes:
 
-```text
-aev_drivelab/
-  scenario/
-    sumo_route_tools.py
-  cosimulation/
-    run_dashboard_synchronization.py
-    dashboard_backend.py
-    dashboard_sumo.py
-    backend_bridge.py
-  simulation/
-    config.py
-    ego_controller.py
-    simulation_backend.py
-scripts/
-  setup_carla.sh
-bootstrap_templates/
-  0.9.13/
-  0.9.15/
-  common/
-```
-
-Component responsibilities:
-
-- `app.py`: Streamlit dashboard and workflow stepper.
-- `aev_drivelab/scenario/sumo_route_tools.py`: SUMO edge loading, route generation, CARLA discovery, process launch helpers, vType editing, and Autoware launch helpers.
-- `aev_drivelab/cosimulation/run_dashboard_synchronization.py`: dashboard-specific SUMO/CARLA runner.
-- `aev_drivelab/cosimulation/dashboard_backend.py`: Flask API used by the dashboard during co-simulation.
-- `aev_drivelab/cosimulation/dashboard_sumo.py`: ego vehicle spawning, vehicle state extraction, battery handling, and CARLA blueprint mapping.
-- `aev_drivelab/simulation/`: legacy direct-SUMO helpers kept separate from the dashboard co-simulation path.
-- `scripts/setup_carla.sh`: CARLA bootstrap and project-specific patch installation.
+- `carla/` is intentionally a host folder for local simulator installations: extract the official `CARLA 0.9.13` and/or `CARLA 0.9.15` archives there without renaming or flattening the directories.
+- `autoware_mini_docker_compose/` contains the material needed to build and start the Autoware container; `./scripts/setup_carla.sh` will also invoke it automatically when `CARLA 0.9.13` is available.
 
 The synchronization command is launched from:
 

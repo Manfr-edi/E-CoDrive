@@ -7,15 +7,18 @@ from flask import Flask, jsonify, request
 
 
 def create_app(sync):
+    """Create the Flask API used by the dashboard during co-simulation."""
     app = Flask(__name__)
 
     def require_sync():
+        """Ensure the synchronization object is available before serving a request."""
         if sync is None:
             return jsonify({"error": "Synchronization is not ready"}), 503
         return None
 
     @app.route("/spawn", methods=["POST"])
     def spawn():
+        """Spawn the dashboard ego vehicle with the requested route and battery settings."""
         error = require_sync()
         if error:
             return error
@@ -70,6 +73,7 @@ def create_app(sync):
 
     @app.route("/state", methods=["GET"])
     def state():
+        """Return the live state of the requested vehicle."""
         error = require_sync()
         if error:
             return error
@@ -85,6 +89,7 @@ def create_app(sync):
 
     @app.route("/vehicles", methods=["GET"])
     def vehicles():
+        """Return the live vehicle list exposed by the synchronization backend."""
         error = require_sync()
         if error:
             return error
@@ -93,6 +98,7 @@ def create_app(sync):
 
     @app.route("/vehicle/<path:veh_id>", methods=["GET"])
     def vehicle(veh_id):
+        """Return the current vType configuration for a vehicle."""
         error = require_sync()
         if error:
             return error
@@ -105,6 +111,7 @@ def create_app(sync):
 
     @app.route("/vehicle/<path:veh_id>/vtype", methods=["POST"])
     def update_vehicle_vtype(veh_id):
+        """Apply a live vType update to the selected vehicle."""
         error = require_sync()
         if error:
             return error
@@ -131,6 +138,7 @@ def create_app(sync):
 
     @app.route("/nearest_edge", methods=["POST"])
     def nearest_edge():
+        """Resolve the nearest SUMO edge to a clicked map position."""
         error = require_sync()
         if error:
             return error
@@ -153,6 +161,7 @@ def create_app(sync):
 
     @app.route("/edges")
     def edges():
+        """Return a lightweight list of edge identifiers for the active network."""
         error = require_sync()
         if error:
             return error
@@ -162,6 +171,7 @@ def create_app(sync):
 
     @app.route("/network")
     def network():
+        """Return the active SUMO network geometry for map rendering."""
         error = require_sync()
         if error:
             return error
@@ -181,4 +191,5 @@ def create_app(sync):
 
 
 def run_api(sync, host="127.0.0.1", port=5000):
+    """Run the dashboard Flask API server."""
     create_app(sync).run(host=host, port=port)

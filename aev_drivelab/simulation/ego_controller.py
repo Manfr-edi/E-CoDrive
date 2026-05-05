@@ -3,6 +3,7 @@ from aev_drivelab.simulation.config import EGO_ID, EGO_TYPE
 
 
 def spawn_ego(start_edge, end_edge):
+    """Spawn the legacy SUMO ego vehicle on a route between two edges."""
     route_id = f"{EGO_ID}_route"
 
     # Validazione route
@@ -21,6 +22,7 @@ def spawn_ego(start_edge, end_edge):
 
 
 def get_battery():
+    """Return the current battery charge level of the legacy ego vehicle."""
     try:
         val = traci.vehicle.getParameter(
             EGO_ID,
@@ -32,6 +34,7 @@ def get_battery():
 
 
 def stop_if_needed():
+    """Stop if needed."""
     battery = get_battery()
 
     if battery is None:
@@ -43,6 +46,7 @@ def stop_if_needed():
 
 
 def get_vehicle_state():
+    """Return the current legacy ego vehicle state from TraCI."""
     if EGO_ID not in traci.vehicle.getIDList():
         return None
 
