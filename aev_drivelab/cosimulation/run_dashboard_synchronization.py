@@ -80,6 +80,16 @@ def configure_carla_version(version):
     return selected_version
 
 
+def release_carla_synchronous_mode(carla_simulation):
+    """Keep CARLA ticking while the dashboard waits for Autoware to spawn."""
+    settings = carla_simulation.world.get_settings()
+    if settings.synchronous_mode or settings.fixed_delta_seconds is not None:
+        settings.synchronous_mode = False
+        settings.fixed_delta_seconds = None
+        carla_simulation.world.apply_settings(settings)
+    carla_simulation.client.get_trafficmanager().set_synchronous_mode(False)
+
+
 def synchronization_loop(args):
     """Run the SUMO-CARLA synchronization loop and optional dashboard API."""
     from run_synchronization import (  # pylint: disable=import-outside-toplevel
@@ -95,46 +105,59 @@ def synchronization_loop(args):
 
     patch_bridge_helper(BridgeHelper)
 
-    sumo_simulation = DashboardSumoSimulation(
-        args.sumo_cfg_file,
-        args.step_length,
-        args.sumo_host,
-        args.sumo_port,
-        args.sumo_gui,
-        args.client_order,
-    )
-    carla_simulation = CarlaSimulation(args.carla_host, args.carla_port, args.step_length)
-
-    synchronization = SimulationSynchronization(
-        sumo_simulation,
-        carla_simulation,
-        args.tls_manager,
-        args.sync_vehicle_color,
-        args.sync_vehicle_lights,
-    )
-
-    if not args.no_dashboard_api:
-        threading.Thread(
-            target=run_api,
-            args=(synchronization, args.dashboard_api_host, args.dashboard_api_port),
-            daemon=True,
-        ).start()
-
-    if args.wait_start_file:
-        wait_path = Path(args.wait_start_file).expanduser().resolve()
-        logging.info("Waiting for dashboard start signal: %s", wait_path)
-        while not wait_path.exists():
-            time.sleep(0.2)
-        logging.info("Dashboard start signal received.")
-        try:
-            wait_path.unlink()
-        except OSError:
-            pass
+    sumo_simulation = None
+    carla_simulation = None
+    synchronization = None
 
     try:
+        sumo_simulation = DashboardSumoSimulation(
+            args.sumo_cfg_file,
+            args.step_length,
+            args.sumo_host,
+            args.sumo_port,
+            args.sumo_gui,
+            args.client_order,
+        )
+        carla_simulation = CarlaSimulation(args.carla_host, args.carla_port, args.step_length)
+
+        if args.wait_start_file:
+            release_carla_synchronous_mode(carla_simulation)
+            wait_path = Path(args.wait_start_file).expanduser().resolve()
+            logging.info(
+                "Waiting for dashboard start signal before enabling CARLA synchronous mode: %s",
+                wait_path,
+            )
+            while not wait_path.exists():
+                time.sleep(0.2)
+            logging.info("Dashboard start signal received.")
+            try:
+                wait_path.unlink()
+            except OSError:
+                pass
+
+        synchronization = SimulationSynchronization(
+            sumo_simulation,
+            carla_simulation,
+            args.tls_manager,
+            args.sync_vehicle_color,
+            args.sync_vehicle_lights,
+        )
+
+        if not args.no_dashboard_api:
+            threading.Thread(
+                target=run_api,
+                args=(synchronization, args.dashboard_api_host, args.dashboard_api_port),
+                daemon=True,
+            ).start()
+
+        traci_lock = getattr(sumo_simulation, "traci_lock", None)
         while True:
             start = time.time()
-            synchronization.tick()
+            if traci_lock is None:
+                synchronization.tick()
+            else:
+                with traci_lock:
+                    synchronization.tick()
 
             elapsed = time.time() - start
             if elapsed < args.step_length:
@@ -145,7 +168,21 @@ def synchronization_loop(args):
 
     finally:
         logging.info("Cleaning synchronization")
-        synchronization.close()
+        traci_lock = getattr(sumo_simulation, "traci_lock", None)
+        try:
+            if synchronization is not None:
+                if traci_lock is None:
+                    synchronization.close()
+                else:
+                    with traci_lock:
+                        synchronization.close()
+            else:
+                if carla_simulation is not None:
+                    carla_simulation.close()
+                if sumo_simulation is not None:
+                    sumo_simulation.close()
+        except Exception as error:  # pragma: no cover - depends on live CARLA/SUMO runtime
+            logging.warning("Synchronization cleanup failed: %s", error)
 
 
 def build_argparser():

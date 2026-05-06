@@ -2,7 +2,6 @@
 """Flask API used by the Streamlit dashboard during SUMO-CARLA co-simulation."""
 
 import traceback
-import logging
 from flask import Flask, jsonify, request
 
 
@@ -30,46 +29,41 @@ def create_app(sync):
         vtype = data.get("vtype") or "vehicle.tesla.model3"
         carla_blueprint = data.get("carla_blueprint")
         vtype_attrs = data.get("vtype_attrs") or {}
-        vtype_params = data.get("vtype_params") or {}
+        vtype_params = dict(data.get("vtype_params") or {})
         battery = data.get("battery", None)
         battery_failure_threshold = data.get("battery_failure_threshold", 0)
 
-        spawned = sync.sumo.spawn_ego_vehicle(
-            start,
-            end,
-            via_edge=via,
-            vtype=vtype,
-            carla_blueprint=carla_blueprint,
-            vtype_attrs=vtype_attrs,
-            vtype_params=vtype_params,
-        )
+        if battery is not None:
+            vtype_params["has.battery.device"] = "true"
+            vtype_params["device.battery.chargeLevel"] = str(battery)
+            vtype_params["device.battery.actualBatteryCapacity"] = str(battery)
+        vtype_params["dashboard.battery.failureThreshold"] = str(battery_failure_threshold)
+
+        try:
+            spawned = sync.sumo.spawn_ego_vehicle(
+                start,
+                end,
+                via_edge=via,
+                vtype=vtype,
+                carla_blueprint=carla_blueprint,
+                vtype_attrs=vtype_attrs,
+                vtype_params=vtype_params,
+                battery_charge_level=battery,
+                battery_failure_threshold=battery_failure_threshold,
+            )
+        except RuntimeError as exc:
+            return {"status": "error", "message": str(exc)}, 500
         if not spawned:
             return {"status": "error", "message": "Route non valida"}, 400
 
-        if battery is not None:
-            try:
-                import traci
+        state_data = sync.sumo.get_vehicle_state("ego_vehicle")
+        if battery is not None and not (state_data or {}).get("has_battery_device"):
+            return {
+                "status": "error",
+                "message": "Ego vehicle spawned without a SUMO battery device.",
+            }, 500
 
-                traci.vehicle.setParameter(
-                    "ego_vehicle",
-                    "device.battery.chargeLevel",
-                    str(battery),
-                )
-            except Exception as exc:  # pragma: no cover - depends on live TraCI.
-                logging.warning("Battery set error: %s", exc)
-
-        try:
-            import traci
-
-            traci.vehicle.setParameter(
-                "ego_vehicle",
-                "dashboard.battery.failureThreshold",
-                str(battery_failure_threshold),
-            )
-        except Exception as exc:  # pragma: no cover - depends on live TraCI.
-            logging.warning("Battery threshold set error: %s", exc)
-
-        return {"status": "spawned"}
+        return {"status": "spawned", "vehicle": state_data or {}}
 
     @app.route("/state", methods=["GET"])
     def state():

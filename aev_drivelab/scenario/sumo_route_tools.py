@@ -45,7 +45,8 @@ DEFAULT_MAP = "Town04"
 DEFAULT_VEHICLE_TYPE = "vehicle.bmw.grandtourer"
 DEFAULT_EGO_BLUEPRINT = "vehicle.tesla.model3"
 AUTOWARE_EGO_VTYPE = "vehicle.lexus.utlexus"
-DEFAULT_EGO_BATTERY_CAPACITY = 10400.0
+DEFAULT_EGO_BATTERY_CAPACITY = 75000.0
+AUTOWARE_CARLA_SPAWN_Z = 2.0
 DEFAULT_SUMO_HOME = "/usr/share/sumo"
 BUNDLED_SUMO_HOME = PROJECT_ROOT / "sumo"
 DEFAULT_CARLA_HOST = "127.0.0.1"
@@ -59,20 +60,20 @@ MMPEVEM_EMISSION_CLASS = "MMPEVEM"
 
 ENERGY_ATTRIBUTE_DEFAULTS = {
     "minGap": "2.50",
-    "maxSpeed": "29.06",
+    "maxSpeed": "13.88",
     "color": "white",
     "accel": "1.0",
     "decel": "1.0",
     "sigma": "0.0",
-    "mass": "1830",
+    "mass": "1919",
 }
 
 ENERGY_PARAM_DEFAULTS = {
-    "airDragCoefficient": "0.35",
+    "airDragCoefficient": "0.23",
     "constantPowerIntake": "100",
-    "frontSurfaceArea": "2.6",
-    "rotatingMass": "40",
-    "maximumPower": "150000",
+    "frontSurfaceArea": "2.2",
+    "rotatingMass": "80",
+    "maximumPower": "350000",
     "propulsionEfficiency": ".98",
     "radialDragCoefficient": "0.1",
     "recuperationEfficiency": ".96",
@@ -81,26 +82,27 @@ ENERGY_PARAM_DEFAULTS = {
 }
 
 MMPEVEM_ATTRIBUTE_DEFAULTS = {
+    "color": "white",
     "actionStepLength": "1.0",
 }
 
 MMPEVEM_PARAM_DEFAULTS = {
-    "vehicleMass": "2100",
-    "wheelRadius": "0.3835",
+    "mass": "1999",
+    "wheelRadius": "0.33",
     "internalMomentOfInertia": "16",
     "rollDragCoefficient": "0.01",
-    "airDragCoefficient": "0.29",
-    "frontSurfaceArea": "3.23",
+    "airDragCoefficient": "0.23",
+    "frontSurfaceArea": "2.22",
     "gearRatio": "9.325",
     "gearEfficiency": "0.96",
-    "maximumTorque": "380",
-    "maximumPower": "180000",
-    "maximumRecuperationTorque": "180",
-    "maximumRecuperationPower": "105000",
+    "maximumTorque": "494",
+    "maximumPower": "350000",
+    "maximumRecuperationTorque": "140",
+    "maximumRecuperationPower": "75000",
     "internalBatteryResistance": "0.1575",
-    "nominalBatteryVoltage": "405",
+    "nominalBatteryVoltage": "357",
     "constantPowerIntake": "360",
-    "powerLossMap": "",
+    # "powerLossMap": "2,1|0,413.7931,827.5862,1241.3793,1655.1724,2068.9655,2482.7586,2896.5517,3310.3448,3724.1379,4137.931,4551.7241,4965.5172,5379.3103,5793.1034,6206.8966,6620.6897,7034.4828,7448.2759,7862.069,8275.8621,8689.6552,9103.4483,9517.2414,9931.0345,10344.8276,10758.6207,11172.4138,11586.2069,12000;-192.8157,-176.7477,-160.6797,-144.6118,-128.5438,-112.4758,-96.4078,-80.3399,-64.2719,-48.2039,-32.1359,-16.068,0,16.068,32.1359,48.2039,64.2719,80.3399,96.4078,112.4758,128.5438,144.6118,160.6797,176.7477,192.8157,208.8836,224.9516,241.0196,257.0876,273.1555,289.2235,305.2915,321.3594,337.4274,353.4954,369.5634,385.6313|3059.92,3292.2,3684.4,4125.3,4607.96,5128.38,5683.86,6272.42,6892.5,7542.89,8222.55,8930.61,9666.35,10429.1,10310.8,11089.67,10785.82,10390.27,10810.04,10481.93,10979.63,11522.42,11203.92,11766.01,12353.56,12963.17,12593.66,13195.25,13812.23,14443.49,2571.18,2794.54,3160.93,3574.57,4028.8,4519.78,5044.9,5602.28,6190.42,6808.15,7454.48,8128.58,8829.74,9557.33,10310.8,11089.67,10785.82,10390.27,10810.04,10481.93,10979.63,11522.42,11203.92,11766.01,12353.56,12963.17,12593.66,13195.25,13812.23,14443.49,2124.95,2338.35,2679.36,3066.29,3492.74,3955.01,4450.61,4977.7,5534.87,6120.96,6735.04,7376.31,8044.08,8737.75,9456.79,10200.74,10785.82,10390.27,10810.04,10481.93,10979.63,11522.42,11203.92,11766.01,12353.56,12963.17,12593.66,13195.25,13812.23,14443.49,1721.21,1923.61,2239.66,2600.44,2999.77,3434.09,3900.98,4398.68,4925.83,5481.31,6064.23,6673.8,7309.37,7970.36,8656.27,9366.63,10064.34,10390.27,10810.04,10481.93,10979.63,11522.42,11203.92,11766.01,12353.56,12963.17,12593.66,13195.25,13812.23,14443.49,1359.97,1550.33,1841.86,2177.04,2549.9,2957,3396.01,3865.22,4363.31,4889.2,5442.04,6021.05,6625.62,7255.17,7909.23,8587.34,9289.11,9670.59,10040.46,10481.93,10979.63,11522.42,11203.92,11766.01,12353.56,12963.17,12593.66,13195.25,13812.23,14443.49,1041.22,1218.5,1485.94,1796.07,2143.13,2523.76,2935.71,3377.32,3847.31,4344.64,4868.47,5418.07,5992.82,6592.18,7215.67,7862.87,8533.39,9003.21,9328.15,9724.18,10175.82,10671.82,11203.92,11766.01,12353.56,12963.17,12593.66,13195.25,13812.23,14443.49,764.98,928.14,1171.9,1457.55,1779.45,2134.36,2520.07,2934.97,3377.82,3847.62,4343.53,4864.85,5410.97,5981.38,6575.6,7193.22,7833.87,8384.9,8669.14,9024.21,9434.59,9888.97,10379.02,10898.58,11443.04,12008.93,12593.66,13195.25,13812.23,14443.49,531.24,679.23,899.76,1161.47,1458.87,1788.79,2149.09,2538.18,2954.86,3398.14,3867.21,4361.39,4880.08,5422.77,5989,6578.39,7190.55,7813.13,8060.28,8378.21,8751.34,9168.33,9620.81,10102.57,10608.98,11136.54,11682.6,12245.16,12822.71,13414.09,339.99,471.78,669.49,907.82,1181.39,1487.07,1822.77,2186.96,2578.42,2996.21,3439.52,3907.69,4400.14,4916.35,5455.9,6018.38,6603.43,7210.74,7499.12,7783.23,8122.55,8505.71,8924.32,9372.16,9844.56,10337.99,10849.81,11377.99,11920.98,12477.63,191.25,305.79,481.12,696.62,947,1229.19,1541.13,1881.29,2248.5,2641.82,3060.46,3503.76,3971.15,4462.13,4976.27,5513.19,6072.52,6653.95,6983.77,7237,7545.53,7897.97,8285.9,8703.07,9144.81,9607.58,10088.72,10586.18,11098.42,11624.26,85,181.26,334.63,527.86,755.71,1015.15,1304.14,1621.18,1965.1,2334.97,2730.02,3149.58,3593.11,4060.1,4550.14,5062.82,5597.81,6154.78,6512.75,6737.81,7018.29,7342.77,7702.83,8092.19,8506.18,8941.24,9394.7,9864.51,10349.11,10847.33,21.25,98.19,230.02,401.53,607.51,844.95,1111.82,1406.62,1728.22,2075.66,2448.2,2845.17,3266.03,3710.27,4177.48,4667.27,5179.3,5713.25,6085.03,6284.42,6539.38,6838.46,7173.21,7537.36,7926.2,8336.18,8764.61,9209.44,9669.11,10142.42,0,58.32,172.48,327.47,517.95,740.81,993.98,1275.91,1585.42,1921.55,2283.51,2670.64,3082.37,3518.18,3977.64,4460.35,4965.97,5494.17,5876.18,6057.77,6296.78,6581.41,6902.92,7254.84,7632.29,8031.6,8450,8885.36,9336.06,9800.88,21.25,98.19,230.02,401.53,607.51,844.95,1111.82,1406.62,1728.22,2075.66,2448.2,2845.17,3266.03,3710.27,4177.48,4667.27,5179.3,5713.25,6085.03,6284.42,6539.38,6838.46,7173.21,7537.36,7926.2,8336.18,8764.61,9209.44,9669.11,10142.42,85,181.26,334.63,527.86,755.71,1015.15,1304.14,1621.18,1965.1,2334.97,2730.02,3149.58,3593.11,4060.1,4550.14,5062.82,5597.81,6154.78,6512.75,6737.81,7018.29,7342.77,7702.83,8092.19,8506.18,8941.24,9394.7,9864.51,10349.11,10847.33,191.25,305.79,481.12,696.62,947,1229.19,1541.13,1881.29,2248.5,2641.82,3060.46,3503.76,3971.15,4462.13,4976.27,5513.19,6072.52,6653.95,6983.77,7237,7545.53,7897.97,8285.9,8703.07,9144.81,9607.58,10088.72,10586.18,11098.42,11624.26,339.99,471.78,669.49,907.82,1181.39,1487.07,1822.77,2186.96,2578.42,2996.21,3439.52,3907.69,4400.14,4916.35,5455.9,6018.38,6603.43,7210.74,7499.12,7783.23,8122.55,8505.71,8924.32,9372.16,9844.56,10337.99,10849.81,11377.99,11920.98,12477.63,531.24,679.23,899.76,1161.47,1458.87,1788.79,2149.09,2538.18,2954.86,3398.14,3867.21,4361.39,4880.08,5422.77,5989,6578.39,7190.55,7813.13,8060.28,8378.21,8751.34,9168.33,9620.81,10102.57,10608.98,11136.54,11682.6,12245.16,12822.71,13414.09,764.98,928.14,1171.9,1457.55,1779.45,2134.36,2520.07,2934.97,3377.82,3847.62,4343.53,4864.85,5410.97,5981.38,6575.6,7193.22,7833.87,8384.9,8669.14,9024.21,9434.59,9888.97,10379.02,10898.58,11443.04,12008.93,12593.66,13195.25,13812.23,14443.49,1041.22,1218.5,1485.94,1796.07,2143.13,2523.76,2935.71,3377.32,3847.31,4344.64,4868.47,5418.07,5992.82,6592.18,7215.67,7862.87,8533.39,9003.21,9328.15,9724.18,10175.82,10671.82,11203.92,11766.01,12353.56,12963.17,13592.32,14239.12,14902.19,15580.51,1359.97,1550.33,1841.86,2177.04,2549.9,2957,3396.01,3865.22,4363.31,4889.2,5442.04,6021.05,6625.62,7255.17,7909.23,8587.34,9289.11,9670.59,10040.46,10481.93,10979.63,11522.42,12102.14,12712.82,13350.05,14010.59,14692.09,15392.85,16111.74,16848.03,1721.21,1923.61,2239.66,2600.44,2999.77,3434.09,3900.98,4398.68,4925.83,5481.31,6064.23,6673.8,7309.37,7970.36,8656.27,9366.63,10064.34,10390.27,10810.04,11302.37,11852.06,12448.17,13082.76,13750.09,14446.05,15167.75,15913.26,16681.4,17471.69,18284.23,2124.95,2338.35,2679.36,3066.29,3492.74,3955.01,4450.61,4977.7,5534.87,6120.96,6735.04,7376.31,8044.08,8737.75,9456.79,10200.74,10785.82,11166.28,11641.97,12191.89,12801.15,13459.15,14158.41,14893.73,15661.64,16460.13,17288.37,18146.71,19036.72,18284.23,2571.18,2794.54,3160.93,3574.57,4028.8,4519.78,5044.9,5602.28,6190.42,6808.15,7454.48,8128.58,8829.74,9557.33,10310.8,11089.67,11562.13,12003.73,12542.85,13158.98,13837.82,14569.51,15347.47,16167.76,17028.57,17930.23,17288.37,18146.71,19036.72,18284.23,3059.92,3292.2,3684.4,4125.3,4607.96,5128.38,5683.86,6272.42,6892.5,7542.89,8222.55,8930.61,9666.35,10429.1,11218.29,12017.36,12398.26,12909.18,13521.37,14215.18,14977.47,15799.94,16678.16,17611.3,17028.57,17930.23,17288.37,18146.71,19036.72,18284.23,3591.16,3831.31,4249.75,4718.46,5230.21,5780.83,6367.49,6988.11,7641.1,8325.17,9039.24,9782.41,10553.91,11353.06,12179.27,12844.59,13300.53,13891.26,14589.29,15376.72,16242.8,17182.8,16678.16,17611.3,17028.57,17930.23,17288.37,18146.71,19036.72,18284.23,4164.89,4411.88,4856.98,5354.06,5895.56,6477.12,7095.77,7749.36,8436.22,9154.99,9904.55,10683.97,11492.43,12329.22,13193.73,13735.1,14277.15,14961.52,15763.13,16667.61,16242.8,17182.8,16678.16,17611.3,17028.57,17930.23,17288.37,18146.71,19036.72,18284.23,4781.13,5033.91,5506.1,6032.11,6604.01,7217.24,7868.72,8556.18,9277.86,10032.35,10818.49,11635.29,12481.9,13357.58,14244.44,14696.41,15339.05,16136.09,17067.26,16667.61,16242.8,17182.8,16678.16,17611.3,17028.57,17930.23,17288.37,18146.71,19036.72,18284.23,5439.86,5697.4,6197.11,6752.59,7355.56,8001.21,8686.33,9408.55,10166.02,10957.26,11781.06,12636.37,13522.32,14438.12,15180.17,15738.39,16501.23,17438.49,17067.26,16667.61,16242.8,17182.8,16678.16,17611.3,17028.57,17930.23,17288.37,18146.71,19036.72,18284.23,6141.09,6402.34,6930,7515.52,8150.2,8829.02,9548.61,10306.48,11100.69,11929.71,12792.25,13687.22,14613.7,15570.87,16190.45,16874.33,17785.24,17438.49,17067.26,16667.61,16242.8,17182.8,16678.16,17611.3,17028.57,17930.23,17288.37,18146.71,19036.72,18284.23,6884.82,7148.74,7704.78,8320.88,8987.93,9700.67,10455.55,11249.96,12081.89,12949.7,13852.06,14787.83,15756.02,16747.9,17286.49,18122.91,17785.24,17438.49,17067.26,16667.61,16242.8,17182.8,16678.16,17611.3,17028.57,17930.23,17288.37,18146.71,19036.72,18284.23,7671.05,7936.6,8521.45,9168.69,9868.76,10616.16,11407.15,12239.01,13109.61,14017.24,14960.5,15938.2,16949.3,17791.47,18483.6,18122.91,17785.24,17438.49,17067.26,16667.61,16242.8,17182.8,16678.16,17611.3,17028.57,17930.23,17288.37,18146.71,19036.72,18284.23,8499.78,8765.92,9380,10058.93,10792.69,11575.49,12403.42,13273.61,14183.84,15132.32,16117.57,17138.33,18193.54,18923.23,18483.6,18122.91,17785.24,17438.49,17067.26,16667.61,16242.8,17182.8,16678.16,17611.3,17028.57,17930.23,17288.37,18146.71,19036.72,18284.23,9371.01,9636.7,10280.44,10991.61,11759.72,12578.66,13444.35,14353.78,15304.6,16294.94,17323.25,18388.23,19488.72,18923.23,18483.6,18122.91,17785.24,17438.49,17067.26,16667.61,16242.8,17182.8,16678.16,17611.3,17028.57,17930.23,17288.37,18146.71,19036.72,18284.23,10284.74,10548.93,11222.76,11966.74,12769.84,13625.68,14529.95,15479.5,16471.87,17505.11,18577.57,19687.88,20674.02,18923.23,18483.6,18122.91,17785.24,17438.49,17067.26,16667.61,16242.8,17182.8,16678.16,17611.3,17028.57,17930.23,17288.37,18146.71,19036.72,18284.23,11240.96,11502.63,12206.97,12984.3,13823.05,14716.53,15660.21,16650.78,17685.67,18762.81,19880.51,21037.3,20674.02,18923.23,18483.6,18122.91,17785.24,17438.49,17067.26,16667.61,16242.8,17182.8,16678.16,17611.3,17028.57,17930.23,17288.37,18146.71,19036.72,18284.23,12239.69,12497.78,13233.06,14044.31,14919.37,15851.22,16835.13,17867.61,18945.98,20068.07,21232.07,22436.48,20674.02,18923.23,18483.6,18122.91,17785.24,17438.49,17067.26,16667.61,16242.8,17182.8,16678.16,17611.3,17028.57,17930.23,17288.37,18146.71,19036.72,18284.23",
 }
 
 BASE_COLOR_VALUES = {
@@ -710,12 +712,76 @@ print(json.dumps({
         ) from exc
 
 
+def _ensure_autoware_spawn_point_passthrough(container_name):
+    """Ensure start_carla.launch forwards the dashboard spawn_point argument unchanged."""
+    docker_binary = shutil.which("docker")
+    patch_script = r"""
+from pathlib import Path
+
+path = Path("/opt/catkin_ws/src/autoware_mini/launch/start_carla.launch")
+text = path.read_text()
+original_text = text
+
+before_carla_block = text.split("<!-- Carla specific -->", 1)[0]
+if 'name="spawn_point"' not in before_carla_block:
+    marker = "    <!-- Carla specific -->"
+    if marker not in text:
+        raise RuntimeError("Could not locate CARLA argument block in start_carla.launch")
+    text = text.replace(
+        marker,
+        '    <arg name="spawn_point"            default=""                             doc="Autoware ego spawn point: x,y,z,roll,pitch,yaw"/>\n\n' + marker,
+        1,
+    )
+
+map_arg = "        <arg name='map_name'                            value='$(arg map_name)'/>"
+spawn_arg = '        <arg name="spawn_point"                         value="$(arg spawn_point)" />'
+if spawn_arg not in text:
+    if map_arg not in text:
+        raise RuntimeError("Could not locate platform/carla.launch map_name arg")
+    text = text.replace(map_arg, map_arg + "\n" + spawn_arg, 1)
+
+if text != original_text:
+    path.write_text(text)
+
+print("patched" if text != original_text else "unchanged")
+""".strip()
+    process = subprocess.run(
+        [
+            docker_binary,
+            "exec",
+            str(container_name),
+            "python3",
+            "-c",
+            patch_script,
+        ],
+        env=_docker_exec_env(),
+        capture_output=True,
+        text=True,
+    )
+    if process.returncode != 0:
+        details = " | ".join(
+            part
+            for part in (process.stderr.strip(), process.stdout.strip())
+            if part
+        )
+        raise RuntimeError(
+            "Could not patch Autoware start_carla.launch to pass spawn_point unchanged: "
+            f"{details or 'unknown error'}"
+        )
+
+    return {
+        "launch_file": "/opt/catkin_ws/src/autoware_mini/launch/start_carla.launch",
+        "status": process.stdout.strip().splitlines()[-1] if process.stdout.strip() else "unknown",
+    }
+
+
 def _publish_autoware_route_in_container(
     container_name,
     initial_pose,
     goal_pose,
     planner_speed_limit_kmh=None,
     ros_timeout_seconds=75,
+    publish_initial_pose=True,
 ):
     """Handle the initial pose and goal inside the Autoware container."""
     docker_binary = shutil.which("docker")
@@ -724,6 +790,7 @@ def _publish_autoware_route_in_container(
             "initial_pose": initial_pose,
             "goal_pose": goal_pose,
             "planner_speed_limit_kmh": planner_speed_limit_kmh,
+            "publish_initial_pose": bool(publish_initial_pose),
         },
         separators=(",", ":"),
     )
@@ -737,17 +804,17 @@ from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry
 
 
-def build_initial_pose_message(data):
-    message = PoseWithCovarianceStamped()
-    message.header.frame_id = data.get("frame_id", "map")
-    message.pose.pose.position.x = float(data["x"])
-    message.pose.pose.position.y = float(data["y"])
-    message.pose.pose.position.z = float(data.get("z", 0.0))
-    message.pose.pose.orientation.x = float(data["qx"])
-    message.pose.pose.orientation.y = float(data["qy"])
-    message.pose.pose.orientation.z = float(data["qz"])
-    message.pose.pose.orientation.w = float(data["qw"])
-    return message
+# def build_initial_pose_message(data):
+#     message = PoseWithCovarianceStamped()
+#     message.header.frame_id = data.get("frame_id", "map")
+#     message.pose.pose.position.x = float(data["x"])
+#     message.pose.pose.position.y = float(data["y"])
+#     message.pose.pose.position.z = float(data.get("z", 0.0))
+#     message.pose.pose.orientation.x = float(data["qx"])
+#     message.pose.pose.orientation.y = float(data["qy"])
+#     message.pose.pose.orientation.z = float(data["qz"])
+#     message.pose.pose.orientation.w = float(data["qw"])
+#     return message
 
 
 def build_goal_message(data):
@@ -776,23 +843,27 @@ timeout_seconds = float(os.environ.get("AUTOWARE_ROUTE_TIMEOUT_SECONDS", "75"))
 initial_pose = payload["initial_pose"]
 goal_pose = payload["goal_pose"]
 planner_speed_limit_kmh = payload.get("planner_speed_limit_kmh")
+publish_initial_pose = bool(payload.get("publish_initial_pose", True))
 
 rospy.init_node("dashboard_autoware_route_publisher", anonymous=True, disable_signals=True)
 if planner_speed_limit_kmh is not None:
     rospy.set_param("/planning/speed_limit", float(planner_speed_limit_kmh))
 rospy.wait_for_message("/carla/ego_vehicle/odometry", Odometry, timeout=timeout_seconds)
 
-initial_publisher = rospy.Publisher("/initialpose", PoseWithCovarianceStamped, queue_size=1)
 goal_publisher = rospy.Publisher("/move_base_simple/goal", PoseStamped, queue_size=1)
+# initial_published = False
 
-wait_for_connections(initial_publisher, "/initialpose", timeout_seconds)
-initial_message = build_initial_pose_message(initial_pose)
-for _ in range(12):
-    initial_message.header.stamp = rospy.Time.now()
-    initial_publisher.publish(initial_message)
-    time.sleep(0.2)
-
-time.sleep(1.0)
+# initial_message = build_initial_pose_message(initial_pose)
+# if publish_initial_pose:
+#     initial_publisher = rospy.Publisher("/initialpose", PoseWithCovarianceStamped, queue_size=1)
+#     wait_for_connections(initial_publisher, "/initialpose", timeout_seconds)
+#     for _ in range(12):
+#         initial_message.header.stamp = rospy.Time.now()
+#         initial_publisher.publish(initial_message)
+#         time.sleep(0.2)
+#     initial_published = True
+# 
+# time.sleep(1.0)
 
 wait_for_connections(goal_publisher, "/move_base_simple/goal", timeout_seconds)
 goal_message = build_goal_message(goal_pose)
@@ -802,10 +873,11 @@ for _ in range(12):
     time.sleep(0.2)
 
 print(json.dumps({
-    "initial_frame": initial_message.header.frame_id,
+    # "initial_frame": initial_message.header.frame_id,
     "goal_frame": goal_message.header.frame_id,
-    "initial_xy": [initial_message.pose.pose.position.x, initial_message.pose.pose.position.y],
+    # "initial_xy": [initial_message.pose.pose.position.x, initial_message.pose.pose.position.y],
     "goal_xy": [goal_message.pose.position.x, goal_message.pose.position.y],
+    # "initial_pose_published": initial_published,
     "planner_speed_limit_kmh": planner_speed_limit_kmh
 }))
 """.strip()
@@ -832,13 +904,14 @@ print(json.dumps({
         text=True,
     )
     if process.returncode != 0:
+        action_label = "Autoware initial pose and goal" if publish_initial_pose else "Autoware goal"
         details = " | ".join(
             part
             for part in (process.stderr.strip(), process.stdout.strip())
             if part
         )
         raise RuntimeError(
-            "Could not publish the Autoware initial pose and goal via ROS 1: "
+            f"Could not publish the {action_label} via ROS 1: "
             f"{details or 'unknown error'}"
         )
 
@@ -848,6 +921,72 @@ print(json.dumps({
         raise RuntimeError(
             "Autoware route publication completed but returned an invalid ROS payload."
         ) from exc
+
+
+def publish_autoware_route_in_container(
+    map_name,
+    name_filter=DEFAULT_AUTOWARE_DOCKER_FILTER,
+    container_name=None,
+    start_edge=None,
+    goal_edge=None,
+    speed_limit_kmh=None,
+    ros_timeout_seconds=75,
+    publish_initial_pose=False,
+):
+    """Publish the Autoware route goal for an already running launch."""
+    map_name = str(map_name).strip()
+    if not map_name:
+        raise ValueError("A valid map name is required to publish an Autoware route.")
+
+    start_edge = (str(start_edge).strip() if start_edge is not None else "")
+    goal_edge = (str(goal_edge).strip() if goal_edge is not None else "")
+    if not start_edge or not goal_edge:
+        raise ValueError("Both a start edge and a goal edge are required to start the Autoware route.")
+
+    initial_pose = autoware_pose_from_edge(
+        start_edge,
+        map_name=map_name,
+        pose_role="initial",
+        edge_position="start",
+    )
+    goal_pose = autoware_pose_from_edge(
+        goal_edge,
+        map_name=map_name,
+        pose_role="goal",
+        edge_position="end",
+    )
+
+    if container_name is None:
+        container = find_running_autoware_container(name_filter=name_filter)
+        container_name = container.get("Names") or container.get("ID")
+
+    route_publication = _publish_autoware_route_in_container(
+        container_name,
+        initial_pose["pose"],
+        goal_pose["pose"],
+        planner_speed_limit_kmh=speed_limit_kmh,
+        ros_timeout_seconds=ros_timeout_seconds,
+        publish_initial_pose=publish_initial_pose,
+    )
+
+    return {
+        "container_name": str(container_name),
+        "start_edge": start_edge,
+        "goal_edge": goal_edge,
+        "initial_pose": initial_pose,
+        "goal_pose": goal_pose,
+        "planner_speed_limit_kmh": (
+            float(speed_limit_kmh)
+            if speed_limit_kmh is not None
+            else None
+        ),
+        "initial_pose_published": bool(
+            route_publication.get("initial_pose_published", publish_initial_pose)
+            if isinstance(route_publication, dict)
+            else publish_initial_pose
+        ),
+        "route_publication": route_publication,
+    }
 
 
 def request_autoware_battery_stop(
@@ -946,14 +1085,15 @@ def launch_autoware_carla_in_container(
     start_edge=None,
     goal_edge=None,
     speed_limit_kmh=None,
+    carla_bridge_passive=False,
+    publish_route=True,
 ):
     """Launch Autoware against the selected CARLA map inside Docker."""
     map_name = str(map_name).strip()
     if not map_name:
         raise ValueError("A valid map name is required to start Autoware.")
 
-    _ = spawn_edge
-
+    spawn_edge = (str(spawn_edge).strip() if spawn_edge is not None else "")
     start_edge = (str(start_edge).strip() if start_edge is not None else "")
     goal_edge = (str(goal_edge).strip() if goal_edge is not None else "")
     route_requested = bool(start_edge or goal_edge)
@@ -964,6 +1104,13 @@ def launch_autoware_carla_in_container(
 
     initial_pose = None
     goal_pose = None
+    spawn_point_data = None
+    resolved_spawn_edge = start_edge or spawn_edge
+    if resolved_spawn_edge:
+        spawn_point_data = autoware_spawn_point_from_edge(
+            resolved_spawn_edge,
+            map_name=map_name,
+        )
     if route_requested:
         initial_pose = autoware_pose_from_edge(
             start_edge,
@@ -983,6 +1130,9 @@ def launch_autoware_carla_in_container(
     container_name = container.get("Names") or container.get("ID")
     docker_binary = shutil.which("docker")
     ensure_autoware_blueprint_available(container_name)
+    spawn_point_passthrough = None
+    if spawn_point_data is not None:
+        spawn_point_passthrough = _ensure_autoware_spawn_point_passthrough(container_name)
     speed_limit_value = None
     planner_speed_limit_setup = None
     if speed_limit_kmh is not None:
@@ -998,6 +1148,10 @@ def launch_autoware_carla_in_container(
         + f"exec roslaunch autoware_mini start_carla.launch "
         f"map_name:={shlex.quote(map_name)} generate_traffic:=false"
     )
+    if spawn_point_data is not None:
+        command += f" spawn_point:={shlex.quote(spawn_point_data['spawn_point'])}"
+    if carla_bridge_passive:
+        command += " passive:=true"
     if route_requested:
         command += " load_goals:=false"
     process = subprocess.run(
@@ -1030,13 +1184,14 @@ def launch_autoware_carla_in_container(
 
     route_publication = None
     route_publication_error = None
-    if route_requested:
+    if route_requested and publish_route:
         try:
             route_publication = _publish_autoware_route_in_container(
                 container_name,
                 initial_pose["pose"],
                 goal_pose["pose"],
                 planner_speed_limit_kmh=speed_limit_kmh,
+                publish_initial_pose=True,
             )
         except Exception as exc:  # pragma: no cover - depends on live ROS runtime
             route_publication_error = str(exc)
@@ -1047,23 +1202,34 @@ def launch_autoware_carla_in_container(
         "display": x11_setup["display"],
         "host_command": x11_setup["host_command"],
         "command": command,
-        "spawn_edge": None,
-        "spawn_point": None,
+        "carla_bridge_passive": bool(carla_bridge_passive),
+        "route_deferred": bool(route_requested and not publish_route),
+        "spawn_edge": resolved_spawn_edge or None,
+        "spawn_point": (
+            spawn_point_data.get("spawn_point")
+            if spawn_point_data is not None
+            else None
+        ),
         "carla_map": (
             initial_pose.get("carla_map")
             if initial_pose is not None
-            else None
+            else (
+                spawn_point_data.get("carla_map")
+                if spawn_point_data is not None
+                else None
+            )
         ),
         "spawn_projection_mode": (
-            initial_pose.get("projection_mode")
-            if initial_pose is not None
+            spawn_point_data.get("projection_mode")
+            if spawn_point_data is not None
             else None
         ),
         "spawn_projection_error": (
-            initial_pose.get("projection_error")
-            if initial_pose is not None
+            spawn_point_data.get("projection_error")
+            if spawn_point_data is not None
             else None
         ),
+        "spawn_point_passthrough": spawn_point_passthrough,
         "start_edge": start_edge or None,
         "goal_edge": goal_edge or None,
         "planner_speed_limit_kmh": (
@@ -1148,7 +1314,7 @@ def available_vehicle_types():
             type_id = element.get("id")
             if not type_id or type_id in seen:
                 continue
-            if type_id == EGO_SUMO_VTYPE:
+            if type_id in {EGO_SUMO_VTYPE, AUTOWARE_EGO_VTYPE}:
                 continue
 
             vehicle_types.append(type_id)
@@ -1337,13 +1503,22 @@ def read_ego_vtype_config():
         {
             key: value
             for key, value in params.items()
-            if key not in {"has.battery.device", "carla.blueprint", "device.battery.capacity"}
+            if key
+            not in {
+                "has.battery.device",
+                "carla.blueprint",
+                "device.battery.capacity",
+                "device.battery.maximumBatteryCapacity",
+            }
         }
     )
 
     try:
         battery_capacity = float(
-            params.get("device.battery.capacity", DEFAULT_EGO_BATTERY_CAPACITY)
+            params.get(
+                "device.battery.maximumBatteryCapacity",
+                params.get("device.battery.capacity", DEFAULT_EGO_BATTERY_CAPACITY),
+            )
         )
     except ValueError:
         battery_capacity = DEFAULT_EGO_BATTERY_CAPACITY
@@ -1406,7 +1581,9 @@ def read_autoware_ego_vtype_config():
                 "has.battery.device",
                 "carla.blueprint",
                 "device.battery.capacity",
+                "device.battery.maximumBatteryCapacity",
                 "device.battery.chargeLevel",
+                "device.battery.actualBatteryCapacity",
                 "dashboard.battery.failureThreshold",
             }
         }
@@ -1414,14 +1591,20 @@ def read_autoware_ego_vtype_config():
 
     try:
         battery_capacity = float(
-            params.get("device.battery.capacity", DEFAULT_EGO_BATTERY_CAPACITY)
+            params.get(
+                "device.battery.maximumBatteryCapacity",
+                params.get("device.battery.capacity", DEFAULT_EGO_BATTERY_CAPACITY),
+            )
         )
     except ValueError:
         battery_capacity = DEFAULT_EGO_BATTERY_CAPACITY
 
     try:
         battery_charge_level = float(
-            params.get("device.battery.chargeLevel", min(5000.0, battery_capacity))
+            params.get(
+                "device.battery.actualBatteryCapacity",
+                params.get("device.battery.chargeLevel", min(5000.0, battery_capacity)),
+            )
         )
     except ValueError:
         battery_charge_level = min(5000.0, battery_capacity)
@@ -1485,6 +1668,7 @@ def write_ego_vtype_config(
         "has.battery.device": "true",
         "carla.blueprint": carla_blueprint,
         "device.battery.capacity": str(float(battery_capacity)),
+        "device.battery.maximumBatteryCapacity": str(float(battery_capacity)),
     }
     base_params.update(parameters)
 
@@ -1536,7 +1720,11 @@ def write_autoware_ego_vtype_config(
     vtype_params = {
         "has.battery.device": "true",
         "device.battery.capacity": str(float(battery_capacity)),
+        "device.battery.maximumBatteryCapacity": str(float(battery_capacity)),
         "device.battery.chargeLevel": str(
+            min(max(0.0, float(battery_charge_level)), float(battery_capacity))
+        ),
+        "device.battery.actualBatteryCapacity": str(
             min(max(0.0, float(battery_charge_level)), float(battery_capacity))
         ),
     }
@@ -1770,12 +1958,6 @@ def _autoware_map_xy_from_sumo_point(map_name, sumo_x, sumo_y):
     return sumo_x - offset_x, sumo_y - offset_y
 
 
-def _carla_xy_from_sumo_point(map_name, sumo_x, sumo_y):
-    """Convert a SUMO point into CARLA map coordinates."""
-    map_x, map_y = _autoware_map_xy_from_sumo_point(map_name, sumo_x, sumo_y)
-    return map_x, -map_y
-
-
 def _fallback_autoware_pose_from_edge(edge, map_name, edge_position="start", z_value=0.0):
     """Build an approximate Autoware pose directly from a SUMO edge shape."""
     reference_shape = edge.shape
@@ -1828,59 +2010,6 @@ def _quaternion_from_euler_deg(roll_deg, pitch_deg, yaw_deg):
         "qz": cr * cp * sy - sr * sp * cy,
         "qw": cr * cp * cy + sr * sp * sy,
     }
-
-
-def _carla_waypoint_transform(carla_x, carla_y, host=DEFAULT_CARLA_HOST, port=DEFAULT_CARLA_PORT):
-    """Query CARLA for the waypoint transform closest to the requested coordinates."""
-    query_script = (
-        "import warnings; "
-        "warnings.filterwarnings('ignore', message='pkg_resources is deprecated as an API.*'); "
-        "import carla, json; "
-        f"client = carla.Client({host!r}, {int(port)}); "
-        "client.set_timeout(5.0); "
-        "world = client.get_world(); "
-        f"location = carla.Location(x={carla_x!r}, y={carla_y!r}, z=10.0); "
-        "waypoint = world.get_map().get_waypoint("
-        "location, project_to_road=True, lane_type=carla.LaneType.Driving"
-        "); "
-        "assert waypoint is not None, 'no driving waypoint found'; "
-        "transform = waypoint.transform; "
-        "print(json.dumps({"
-        "'world_map': world.get_map().name, "
-        "'x': transform.location.x, "
-        "'y': transform.location.y, "
-        "'z': transform.location.z, "
-        "'roll': transform.rotation.roll, "
-        "'pitch': transform.rotation.pitch, "
-        "'yaw': transform.rotation.yaw"
-        "}))"
-    )
-
-    python_executable = resolve_carla_python_executable()
-    process = subprocess.run(
-        [
-            str(python_executable),
-            "-c",
-            query_script,
-        ],
-        env=_build_env(),
-        capture_output=True,
-        text=True,
-    )
-    if process.returncode != 0:
-        details = " | ".join(
-            part
-            for part in (process.stderr.strip(), process.stdout.strip())
-            if part
-        )
-        raise RuntimeError(details or "Could not contact CARLA for waypoint projection.")
-
-    try:
-        return json.loads(process.stdout.strip().splitlines()[-1])
-    except (IndexError, json.JSONDecodeError) as exc:
-        raise RuntimeError(
-            "Autoware pose generation returned an invalid CARLA waypoint payload."
-        ) from exc
 
 
 def autoware_pose_from_edge(
@@ -1946,7 +2075,8 @@ def autoware_spawn_point_from_edge(
         pose_role="spawn",
         edge_position="start",
     )
-    pose = pose_data["pose"]
+    pose = dict(pose_data["pose"])
+    pose["z"] = AUTOWARE_CARLA_SPAWN_Z
     spawn_point = ",".join(
         f"{float(pose[key]):.3f}"
         for key in ("x", "y", "z", "roll", "pitch", "yaw")
@@ -1955,7 +2085,7 @@ def autoware_spawn_point_from_edge(
         edge,
         map_name,
         edge_position="start",
-        z_value=0.5,
+        z_value=AUTOWARE_CARLA_SPAWN_Z,
     )
     if pose_data["projection_mode"] == "sumo_fallback":
         fallback_spawn_point = spawn_point
@@ -2967,7 +3097,7 @@ def load_carla_map(map_name, log_file=None):
     return process.stdout, process.stderr
 
 
-def prepare_carla(map_name, carla_process=None, timeout=120):
+def prepare_carla(map_name, carla_process=None, timeout=120, load_map=True):
     """Prepare CARLA using the active repository installation."""
     ensure_carla_python_api_ready()
 
@@ -2984,7 +3114,10 @@ def prepare_carla(map_name, carla_process=None, timeout=120):
             carla_started = True
         wait_for_carla_server(process=process, timeout=timeout)
 
-    map_stdout, map_stderr = load_carla_map(map_name)
+    map_stdout = ""
+    map_stderr = ""
+    if load_map:
+        map_stdout, map_stderr = load_carla_map(map_name)
     return process, carla_log_file, carla_started, map_stdout, map_stderr
 
 
@@ -2996,6 +3129,7 @@ def start_synchronization(
     carla_timeout=120,
     sumo_gui=True,
     wait_for_start=False,
+    load_map=True,
     log_file=None,
 ):
     """Start the SUMO-CARLA synchronization runner."""
@@ -3018,15 +3152,17 @@ def start_synchronization(
             map_name,
             carla_process=carla_process,
             timeout=carla_timeout,
+            load_map=load_map,
         )
-        map_loaded = True
+        map_loaded = bool(load_map)
     else:
         if not is_carla_server_ready():
             raise RuntimeError(
                 f"CARLA is not reachable on {DEFAULT_CARLA_HOST}:{DEFAULT_CARLA_PORT}."
             )
-        map_stdout, map_stderr = load_carla_map(map_name)
-        map_loaded = True
+        if load_map:
+            map_stdout, map_stderr = load_carla_map(map_name)
+            map_loaded = True
 
     if log_file is None:
         log_file = OUTPUT_DIR / "run_dashboard_synchronization.log"

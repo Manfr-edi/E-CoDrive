@@ -70,29 +70,31 @@
         },
         "vehicle.lexus.utlexus": {
             "vClass": "evehicle",
-            "emissionClass": "Energy/unknown",
+            "emissionClass": "MMPEVEM",
             "minGap": "2.5",
             "maxSpeed": "29.06",
             "color": "128,128,128",
             "accel": "1.0",
             "decel": "1.0",
             "sigma": "0.03",
-            "mass": "1830.0",
+            "mass": "1999.0",
             "params": {
                 "has.battery.device": "true",
-                "device.battery.capacity": "9500.0",
-                "device.battery.chargeLevel": "1995.0",
-                "airDragCoefficient": "0.35",
+                "device.battery.capacity": "75000.0",
+                "device.battery.chargeLevel": "60000.0",
+                "airDragCoefficient": "0.23",
                 "constantPowerIntake": "100.0",
                 "frontSurfaceArea": "2.6",
                 "rotatingMass": "40.0",
-                "maximumPower": "150000.0",
+                "maximumPower": "350000.0",
                 "propulsionEfficiency": "0.98",
                 "radialDragCoefficient": "0.1",
                 "recuperationEfficiency": "0.96",
                 "rollDragCoefficient": "0.01",
                 "stoppingThreshold": "0.4"
             }
+
+
         },
         "vehicle.carlamotors.carlacola": {
             "vClass": "truck",

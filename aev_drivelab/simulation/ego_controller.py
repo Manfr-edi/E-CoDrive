@@ -23,14 +23,13 @@ def spawn_ego(start_edge, end_edge):
 
 def get_battery():
     """Return the current battery charge level of the legacy ego vehicle."""
-    try:
-        val = traci.vehicle.getParameter(
-            EGO_ID,
-            "device.battery.chargeLevel"
-        )
-        return float(val)
-    except:
-        return None
+    for key in ("device.battery.actualBatteryCapacity", "device.battery.chargeLevel"):
+        try:
+            val = traci.vehicle.getParameter(EGO_ID, key)
+            return float(val)
+        except Exception:
+            continue
+    return None
 
 
 def stop_if_needed():

@@ -34,12 +34,16 @@ class CoSimBridge:
 
         if veh_id not in traci.vehicle.getIDList():
             return None
+        battery = None
+        for key in ("device.battery.actualBatteryCapacity", "device.battery.chargeLevel"):
+            try:
+                battery = traci.vehicle.getParameter(veh_id, key)
+                break
+            except traci.exceptions.TraCIException:
+                continue
 
         return {
             "speed": traci.vehicle.getSpeed(veh_id),
             "edge": traci.vehicle.getRoadID(veh_id),
-            "battery": traci.vehicle.getParameter(
-                veh_id,
-                "device.battery.chargeLevel"
-            )
+            "battery": battery
         }

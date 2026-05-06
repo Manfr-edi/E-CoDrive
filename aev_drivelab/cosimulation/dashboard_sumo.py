@@ -3,8 +3,10 @@
 
 import collections
 import logging
+import math
 import random
 import re
+import threading
 
 import carla  # pylint: disable=import-error
 import traci  # pylint: disable=import-error
@@ -17,11 +19,11 @@ from aev_drivelab.scenario.sumo_route_tools import (
     ENERGY_ATTRIBUTE_DEFAULTS,
     ENERGY_EMISSION_CLASS,
     ENERGY_PARAM_DEFAULTS,
-    EGO_SUMO_VTYPE,
     MMPEVEM_ATTRIBUTE_DEFAULTS,
     MMPEVEM_EMISSION_CLASS,
     MMPEVEM_PARAM_DEFAULTS,
     ego_emission_class_value,
+    read_autoware_ego_vtype_config,
     request_autoware_battery_stop,
 )
 
@@ -46,21 +48,42 @@ COLOR_VALUES = {
     "magenta": (255, 0, 255, 255),
 }
 COLOR_NAMES = {value: name for name, value in COLOR_VALUES.items()}
+AUTOWARE_EGO_ROLE_NAMES = {"ego_vehicle", "hero", "autoware_ego", "aev_ego"}
+BATTERY_CURRENT_KEYS = (
+    "device.battery.actualBatteryCapacity",
+    "device.battery.chargeLevel",
+)
+BATTERY_MAXIMUM_KEYS = (
+    "device.battery.maximumBatteryCapacity",
+    "device.battery.capacity",
+)
+BATTERY_TOTAL_CONSUMPTION_KEYS = (
+    "device.battery.totalEnergyConsumed",
+)
 
 
 class DashboardSumoSimulation(SumoSimulation):
     """SUMO simulation extension used by the dashboard backend."""
+
+    def __init__(self, *args, **kwargs):
+        """Initialize the SUMO simulation with a lock shared by API and sync loop."""
+        self.traci_lock = threading.RLock()
+        self._autoware_battery_enforced_vehicles = set()
+        super().__init__(*args, **kwargs)
 
     @staticmethod
     def _is_dashboard_battery_vehicle(veh_id, type_id=None):
         """Return whether the vehicle should be tracked by dashboard battery logic."""
         vehicle_id = str(veh_id)
         resolved_type_id = "" if type_id is None else str(type_id)
-        return vehicle_id == "ego_vehicle" or vehicle_id.startswith("carla") or resolved_type_id in {
-            EGO_SUMO_VTYPE,
-            DEFAULT_EGO_BLUEPRINT,
-            AUTOWARE_EGO_VTYPE,
-        }
+        return (
+            vehicle_id == "ego_vehicle"
+            or resolved_type_id == AUTOWARE_EGO_VTYPE
+            or (
+                vehicle_id.startswith("carla")
+                and resolved_type_id == DEFAULT_EGO_BLUEPRINT
+            )
+        )
 
     @staticmethod
     def _resolve_vehicle_id(veh_id):
@@ -72,42 +95,62 @@ class DashboardSumoSimulation(SumoSimulation):
         return None
 
     @staticmethod
-    def _has_battery_device(veh_id):
-        """Return whether a vehicle exposes battery-related TraCI parameters."""
+    def _has_battery_device(veh_id, type_id=None):
+        """Return whether a live vehicle exposes SUMO battery-device parameters."""
         resolved_vehicle_id = DashboardSumoSimulation._resolve_vehicle_id(veh_id)
         if resolved_vehicle_id is None:
             return False
 
-        def _is_enabled(value):
-            """Return whether a TraCI parameter value should be treated as enabled."""
-            if value in (None, ""):
+        resolved_type_id = type_id
+        if resolved_type_id is None:
+            try:
+                resolved_type_id = traci.vehicle.getTypeID(resolved_vehicle_id)
+            except traci.exceptions.TraCIException:
                 return False
-            return str(value).strip().lower() not in {"0", "false", "none"}
-
-        for key in ("device.battery.capacity", "has.battery.device"):
-            try:
-                if _is_enabled(traci.vehicle.getParameter(resolved_vehicle_id, key)):
-                    return True
-            except traci.exceptions.TraCIException:
-                continue
-
-        try:
-            type_id = traci.vehicle.getTypeID(resolved_vehicle_id)
-        except traci.exceptions.TraCIException:
+        if not DashboardSumoSimulation._is_dashboard_battery_vehicle(
+            resolved_vehicle_id,
+            type_id=resolved_type_id,
+        ):
             return False
 
-        getter = getattr(traci.vehicletype, "getParameter", None)
-        if getter is None:
-            return False
-
-        for key in ("device.battery.capacity", "has.battery.device"):
+        for key in BATTERY_CURRENT_KEYS + BATTERY_MAXIMUM_KEYS:
             try:
-                if _is_enabled(getter(type_id, key)):
-                    return True
+                value = traci.vehicle.getParameter(resolved_vehicle_id, key)
             except traci.exceptions.TraCIException:
                 continue
-
+            if value not in (None, ""):
+                return True
         return False
+
+    @staticmethod
+    def _vehicle_parameter_float(veh_id, keys):
+        """Read the first available numeric TraCI vehicle parameter."""
+        for key in keys:
+            try:
+                value = traci.vehicle.getParameter(veh_id, key)
+            except traci.exceptions.TraCIException:
+                continue
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(number):
+                return number
+        return None
+
+    @staticmethod
+    def _is_autoware_carla_actor(carla_actor):
+        """Return whether a CARLA actor is the Autoware-controlled ego vehicle."""
+        actor_type_id = getattr(carla_actor, "type_id", "")
+        attrs = getattr(carla_actor, "attributes", {}) or {}
+        role_name = str(attrs.get("role_name", "")).strip()
+        if role_name == "sumo_driver":
+            return False
+        return (
+            actor_type_id == AUTOWARE_EGO_VTYPE
+            or role_name in AUTOWARE_EGO_ROLE_NAMES
+            or actor_type_id == DEFAULT_EGO_BLUEPRINT
+        )
 
     @staticmethod
     def get_actor(actor_id):
@@ -168,9 +211,20 @@ class DashboardSumoSimulation(SumoSimulation):
         if not color:
             return
 
+        parsed_color = COLOR_VALUES.get(color, color)
+        if isinstance(parsed_color, str):
+            try:
+                parsed_color = [
+                    int(float(component.strip()))
+                    for component in parsed_color.split(",")
+                    if component.strip() != ""
+                ]
+            except ValueError:
+                parsed_color = color
+
         try:
-            traci.vehicletype.setColor(type_id, COLOR_VALUES.get(color, color))
-        except (TypeError, traci.exceptions.TraCIException) as error:
+            traci.vehicletype.setColor(type_id, parsed_color)
+        except (TypeError, ValueError, traci.exceptions.TraCIException) as error:
             logging.warning("Could not set vType color %s=%s: %s", type_id, color, error)
 
     @staticmethod
@@ -237,6 +291,47 @@ class DashboardSumoSimulation(SumoSimulation):
                 logging.warning("Could not set vType parameter %s=%s: %s", key, value, error)
 
         return True
+
+    @staticmethod
+    def _ensure_autoware_ego_type():
+        """Ensure the SUMO mirror of the Autoware ego carries battery and color metadata."""
+        config = read_autoware_ego_vtype_config()
+        attributes = dict(config.get("attributes") or {})
+        attributes.setdefault("color", "white")
+        attributes["emissionClass"] = config.get(
+            "emission_class",
+            ego_emission_class_value(config.get("emission_model", ENERGY_EMISSION_CLASS)),
+        )
+
+        battery_capacity = float(
+            config.get("battery_capacity") or DEFAULT_EGO_BATTERY_CAPACITY
+        )
+        battery_charge = min(
+            max(0.0, float(config.get("battery_charge_level") or battery_capacity)),
+            battery_capacity,
+        )
+        parameters = dict(config.get("parameters") or {})
+        parameters.update(
+            {
+                "has.battery.device": "true",
+                "device.battery.capacity": str(battery_capacity),
+                "device.battery.maximumBatteryCapacity": str(battery_capacity),
+                "device.battery.chargeLevel": str(battery_charge),
+                "device.battery.actualBatteryCapacity": str(battery_charge),
+            }
+        )
+        if config.get("battery_failure_threshold") is not None:
+            parameters["dashboard.battery.failureThreshold"] = str(
+                config.get("battery_failure_threshold")
+            )
+
+        return DashboardSumoSimulation._ensure_vehicle_type(
+            AUTOWARE_EGO_VTYPE,
+            AUTOWARE_EGO_VTYPE,
+            attributes,
+            parameters,
+            source_type_id=AUTOWARE_EGO_VTYPE,
+        )
 
     @staticmethod
     def _detect_emission_model(emission_class):
@@ -324,12 +419,13 @@ class DashboardSumoSimulation(SumoSimulation):
             if value not in (None, ""):
                 parameters[key] = value
 
-        try:
-            battery_capacity = float(
-                traci.vehicletype.getParameter(type_id, "device.battery.capacity")
-            )
-        except (TypeError, ValueError, traci.exceptions.TraCIException):
-            battery_capacity = DEFAULT_EGO_BATTERY_CAPACITY
+        battery_capacity = DEFAULT_EGO_BATTERY_CAPACITY
+        for key in BATTERY_MAXIMUM_KEYS:
+            try:
+                battery_capacity = float(traci.vehicletype.getParameter(type_id, key))
+                break
+            except (TypeError, ValueError, traci.exceptions.TraCIException):
+                continue
 
         return {
             "sumo_vtype": type_id,
@@ -344,13 +440,19 @@ class DashboardSumoSimulation(SumoSimulation):
     @staticmethod
     def _vehicle_charge_level(veh_id, battery_capacity):
         """Return the current battery charge level capped to the configured capacity."""
-        try:
-            current_charge = float(
-                traci.vehicle.getParameter(veh_id, "device.battery.chargeLevel")
+        current_charge = DashboardSumoSimulation._vehicle_parameter_float(
+            veh_id,
+            BATTERY_CURRENT_KEYS,
+        )
+        if current_charge is None:
+            total_consumed = DashboardSumoSimulation._vehicle_parameter_float(
+                veh_id,
+                BATTERY_TOTAL_CONSUMPTION_KEYS,
             )
-            return min(current_charge, float(battery_capacity))
-        except (TypeError, ValueError, traci.exceptions.TraCIException):
+            if total_consumed is not None:
+                return max(0.0, float(battery_capacity) - total_consumed)
             return float(battery_capacity)
+        return min(current_charge, float(battery_capacity))
 
     @staticmethod
     def _vehicle_failure_threshold(veh_id):
@@ -408,56 +510,144 @@ class DashboardSumoSimulation(SumoSimulation):
         sanitized = re.sub(r"[^A-Za-z0-9_]+", "_", str(veh_id))
         return f"dashboard_live_{sanitized}_{int(traci.simulation.getTime() * 1000)}"
 
+    @staticmethod
+    def _spawn_vehicle_type_id(veh_id):
+        """Build a unique vType id for a freshly spawned dashboard ego vehicle."""
+        sanitized = re.sub(r"[^A-Za-z0-9_]+", "_", str(veh_id))
+        return f"dashboard_spawn_{sanitized}_{int(traci.simulation.getTime() * 1000)}"
+
+    def spawn_actor(self, type_id, color=None):
+        """Spawn a CARLA-origin actor in SUMO with dashboard ego metadata when needed."""
+        with self.traci_lock:
+            if type_id == AUTOWARE_EGO_VTYPE:
+                if not self._ensure_autoware_ego_type():
+                    return super().spawn_actor(type_id, color=color)
+                color = None
+            return super().spawn_actor(type_id, color=color)
+
+    def _enforce_autoware_battery_once_after_motion(self, veh_id, type_id=None):
+        """Attach Autoware ego battery parameters once, after the SUMO mirror starts moving."""
+        resolved_vehicle_id = self._resolve_vehicle_id(veh_id)
+        if resolved_vehicle_id is None:
+            return False
+
+        if type_id is None:
+            try:
+                type_id = traci.vehicle.getTypeID(resolved_vehicle_id)
+            except traci.exceptions.TraCIException:
+                return False
+        if type_id != AUTOWARE_EGO_VTYPE:
+            return False
+
+        vehicle_key = str(resolved_vehicle_id)
+        if vehicle_key in self._autoware_battery_enforced_vehicles:
+            return False
+
+        try:
+            speed = float(traci.vehicle.getSpeed(resolved_vehicle_id))
+        except (TypeError, ValueError, traci.exceptions.TraCIException):
+            return False
+        if speed <= 0.05:
+            return False
+
+        self._autoware_battery_enforced_vehicles.add(vehicle_key)
+        config = read_autoware_ego_vtype_config()
+        try:
+            battery_capacity = float(
+                config.get("battery_capacity") or DEFAULT_EGO_BATTERY_CAPACITY
+            )
+        except (TypeError, ValueError):
+            battery_capacity = DEFAULT_EGO_BATTERY_CAPACITY
+        try:
+            battery_charge = float(config.get("battery_charge_level") or battery_capacity)
+        except (TypeError, ValueError):
+            battery_charge = battery_capacity
+        battery_charge = min(max(0.0, battery_charge), battery_capacity)
+
+        parameters = {
+            "has.battery.device": "true",
+            "device.battery.capacity": str(battery_capacity),
+            "device.battery.maximumBatteryCapacity": str(battery_capacity),
+            "device.battery.chargeLevel": str(battery_charge),
+            "device.battery.actualBatteryCapacity": str(battery_charge),
+        }
+        if config.get("battery_failure_threshold") is not None:
+            parameters["dashboard.battery.failureThreshold"] = str(
+                config.get("battery_failure_threshold")
+            )
+
+        applied = False
+        for key, value in parameters.items():
+            if value is None or value == "":
+                continue
+            try:
+                traci.vehicle.setParameter(resolved_vehicle_id, key, str(value))
+                applied = True
+            except traci.exceptions.TraCIException as error:
+                logging.warning(
+                    "Could not apply one-shot Autoware battery parameter %s=%s to %s: %s",
+                    key,
+                    value,
+                    resolved_vehicle_id,
+                    error,
+                )
+        return applied
+
     def list_vehicles(self):
         """Return the live SUMO vehicles visible to the dashboard."""
-        vehicles = []
-        for veh_id in sorted(
-            traci.vehicle.getIDList(),
-            key=lambda item: (str(item) != "ego_vehicle", str(item)),
-        ):
-            type_id = traci.vehicle.getTypeID(veh_id)
-            vehicles.append(
-                {
-                    "id": str(veh_id),
-                    "type_id": type_id,
-                    "edge": traci.vehicle.getRoadID(veh_id),
-                    "speed": traci.vehicle.getSpeed(veh_id),
-                    "has_battery_device": (
-                        self._has_battery_device(veh_id)
-                        if self._is_dashboard_battery_vehicle(veh_id, type_id=type_id)
-                        else False
-                    ),
-                }
-            )
-        return vehicles
+        with self.traci_lock:
+            vehicles = []
+            for veh_id in sorted(
+                traci.vehicle.getIDList(),
+                key=lambda item: (str(item) != "ego_vehicle", str(item)),
+            ):
+                type_id = traci.vehicle.getTypeID(veh_id)
+                vehicles.append(
+                    {
+                        "id": str(veh_id),
+                        "type_id": type_id,
+                        "edge": traci.vehicle.getRoadID(veh_id),
+                        "speed": traci.vehicle.getSpeed(veh_id),
+                        "has_battery_device": (
+                            self._has_battery_device(veh_id, type_id=type_id)
+                            if self._is_dashboard_battery_vehicle(veh_id, type_id=type_id)
+                            else False
+                        ),
+                    }
+                )
+            return vehicles
 
     def get_vehicle_vtype_config(self, veh_id):
         """Return the editable vType configuration for a live vehicle."""
-        resolved_vehicle_id = self._resolve_vehicle_id(veh_id)
-        if resolved_vehicle_id is None:
-            return None
+        with self.traci_lock:
+            resolved_vehicle_id = self._resolve_vehicle_id(veh_id)
+            if resolved_vehicle_id is None:
+                return None
 
-        type_id = traci.vehicle.getTypeID(resolved_vehicle_id)
-        try:
-            carla_blueprint = traci.vehicle.getParameter(
-                resolved_vehicle_id,
-                "carla.blueprint",
+            type_id = traci.vehicle.getTypeID(resolved_vehicle_id)
+            try:
+                carla_blueprint = traci.vehicle.getParameter(
+                    resolved_vehicle_id,
+                    "carla.blueprint",
+                )
+            except traci.exceptions.TraCIException:
+                carla_blueprint = ""
+            if not carla_blueprint and type_id.startswith("vehicle."):
+                carla_blueprint = type_id
+
+            config = self._vehicle_type_config(type_id, carla_blueprint=carla_blueprint)
+            config.update(
+                {
+                    "vehicle_id": str(resolved_vehicle_id),
+                    "edge": traci.vehicle.getRoadID(resolved_vehicle_id),
+                    "speed": traci.vehicle.getSpeed(resolved_vehicle_id),
+                    "has_battery_device": self._has_battery_device(
+                        resolved_vehicle_id,
+                        type_id=type_id,
+                    ),
+                }
             )
-        except traci.exceptions.TraCIException:
-            carla_blueprint = ""
-        if not carla_blueprint and type_id.startswith("vehicle."):
-            carla_blueprint = type_id
-
-        config = self._vehicle_type_config(type_id, carla_blueprint=carla_blueprint)
-        config.update(
-            {
-                "vehicle_id": str(resolved_vehicle_id),
-                "edge": traci.vehicle.getRoadID(resolved_vehicle_id),
-                "speed": traci.vehicle.getSpeed(resolved_vehicle_id),
-                "has_battery_device": self._has_battery_device(resolved_vehicle_id),
-            }
-        )
-        return config
+            return config
 
     def update_vehicle_vtype(
         self,
@@ -468,87 +658,113 @@ class DashboardSumoSimulation(SumoSimulation):
         parameters=None,
     ):
         """Update vehicle vtype."""
-        resolved_vehicle_id = self._resolve_vehicle_id(veh_id)
-        if resolved_vehicle_id is None:
-            return None
-        has_battery_device = self._has_battery_device(resolved_vehicle_id)
+        with self.traci_lock:
+            resolved_vehicle_id = self._resolve_vehicle_id(veh_id)
+            if resolved_vehicle_id is None:
+                return None
 
-        current_type_id = traci.vehicle.getTypeID(resolved_vehicle_id)
-        live_type_id = self._live_vehicle_type_id(resolved_vehicle_id)
-        try:
-            applied_blueprint = traci.vehicle.getParameter(
+            current_type_id = traci.vehicle.getTypeID(resolved_vehicle_id)
+            has_battery_device = self._has_battery_device(
                 resolved_vehicle_id,
-                "carla.blueprint",
+                type_id=current_type_id,
             )
-        except traci.exceptions.TraCIException:
-            applied_blueprint = ""
-        if not applied_blueprint and current_type_id.startswith("vehicle."):
-            applied_blueprint = current_type_id
-
-        vtype_attrs = dict(attributes or {})
-        vtype_attrs["emissionClass"] = ego_emission_class_value(emission_model)
-
-        vtype_params = {
-        }
-        if has_battery_device:
-            vtype_params["has.battery.device"] = "true"
-            vtype_params["device.battery.capacity"] = str(float(battery_capacity))
-        vtype_params.update(
-            {
-                key: value
-                for key, value in (parameters or {}).items()
-                if value is not None and str(value).strip() != ""
-            }
-        )
-        if applied_blueprint:
-            vtype_params["carla.blueprint"] = applied_blueprint
-
-        if not self._ensure_vehicle_type(
-            live_type_id,
-            applied_blueprint,
-            vtype_attrs,
-            vtype_params,
-            source_type_id=current_type_id,
-        ):
-            raise RuntimeError(
-                f"Could not create live vType derived from `{current_type_id}` for vehicle `{resolved_vehicle_id}`."
-            )
-
-        failure_threshold = self._vehicle_failure_threshold(resolved_vehicle_id)
-        charge_level = self._vehicle_charge_level(resolved_vehicle_id, battery_capacity)
-
-        try:
-            traci.vehicle.setType(resolved_vehicle_id, live_type_id)
-            if applied_blueprint:
-                traci.vehicle.setParameter(
+            live_type_id = self._live_vehicle_type_id(resolved_vehicle_id)
+            try:
+                applied_blueprint = traci.vehicle.getParameter(
                     resolved_vehicle_id,
                     "carla.blueprint",
-                    str(applied_blueprint),
                 )
+            except traci.exceptions.TraCIException:
+                applied_blueprint = ""
+            if not applied_blueprint and current_type_id.startswith("vehicle."):
+                applied_blueprint = current_type_id
+
+            vtype_attrs = dict(attributes or {})
+            vtype_attrs["emissionClass"] = ego_emission_class_value(emission_model)
+
+            vtype_params = {}
             if has_battery_device:
-                traci.vehicle.setParameter(resolved_vehicle_id, "has.battery.device", "true")
-                traci.vehicle.setParameter(
-                    resolved_vehicle_id,
-                    "device.battery.capacity",
-                    str(float(battery_capacity)),
+                vtype_params["has.battery.device"] = "true"
+                vtype_params["device.battery.capacity"] = str(float(battery_capacity))
+                vtype_params["device.battery.maximumBatteryCapacity"] = str(
+                    float(battery_capacity)
                 )
-                traci.vehicle.setParameter(
-                    resolved_vehicle_id,
-                    "device.battery.chargeLevel",
-                    str(charge_level),
+            battery_param_keys = {
+                "has.battery.device",
+                "device.battery.capacity",
+                "device.battery.maximumBatteryCapacity",
+                "device.battery.chargeLevel",
+                "device.battery.actualBatteryCapacity",
+                "dashboard.battery.failureThreshold",
+            }
+            vtype_params.update(
+                {
+                    key: value
+                    for key, value in (parameters or {}).items()
+                    if value is not None and str(value).strip() != ""
+                    and (has_battery_device or key not in battery_param_keys)
+                }
+            )
+            if applied_blueprint:
+                vtype_params["carla.blueprint"] = applied_blueprint
+
+            if not self._ensure_vehicle_type(
+                live_type_id,
+                applied_blueprint,
+                vtype_attrs,
+                vtype_params,
+                source_type_id=current_type_id,
+            ):
+                raise RuntimeError(
+                    f"Could not create live vType derived from `{current_type_id}` for vehicle `{resolved_vehicle_id}`."
                 )
-                if failure_threshold not in (None, ""):
+
+            failure_threshold = ""
+            charge_level = None
+            if has_battery_device:
+                failure_threshold = self._vehicle_failure_threshold(resolved_vehicle_id)
+                charge_level = self._vehicle_charge_level(resolved_vehicle_id, battery_capacity)
+
+            try:
+                traci.vehicle.setType(resolved_vehicle_id, live_type_id)
+                if applied_blueprint:
                     traci.vehicle.setParameter(
                         resolved_vehicle_id,
-                        "dashboard.battery.failureThreshold",
-                        str(failure_threshold),
+                        "carla.blueprint",
+                        str(applied_blueprint),
                     )
-        except traci.exceptions.TraCIException as error:
-            raise RuntimeError(
-                f"SUMO rejected live vType update for vehicle `{resolved_vehicle_id}`: {error}"
-            ) from error
+                if has_battery_device:
+                    traci.vehicle.setParameter(resolved_vehicle_id, "has.battery.device", "true")
+                    for key in BATTERY_MAXIMUM_KEYS:
+                        try:
+                            traci.vehicle.setParameter(
+                                resolved_vehicle_id,
+                                key,
+                                str(float(battery_capacity)),
+                            )
+                        except traci.exceptions.TraCIException:
+                            continue
+                    for key in BATTERY_CURRENT_KEYS:
+                        try:
+                            traci.vehicle.setParameter(
+                                resolved_vehicle_id,
+                                key,
+                                str(charge_level),
+                            )
+                        except traci.exceptions.TraCIException:
+                            continue
+                    if failure_threshold not in (None, ""):
+                        traci.vehicle.setParameter(
+                            resolved_vehicle_id,
+                            "dashboard.battery.failureThreshold",
+                            str(failure_threshold),
+                        )
+            except traci.exceptions.TraCIException as error:
+                raise RuntimeError(
+                    f"SUMO rejected live vType update for vehicle `{resolved_vehicle_id}`: {error}"
+                ) from error
 
-        return self.get_vehicle_vtype_config(resolved_vehicle_id)
+            return self.get_vehicle_vtype_config(resolved_vehicle_id)
 
     def spawn_ego_vehicle(
         self,
@@ -560,147 +776,227 @@ class DashboardSumoSimulation(SumoSimulation):
         carla_blueprint=None,
         vtype_attrs=None,
         vtype_params=None,
+        battery_charge_level=None,
+        battery_failure_threshold=None,
     ):
         """Spawn the dashboard ego vehicle, optionally routing it through a via edge."""
-        if not self._ensure_vehicle_type(vtype, carla_blueprint, vtype_attrs, vtype_params):
-            return False
+        with self.traci_lock:
+            vehicle_params = dict(vtype_params or {})
+            if carla_blueprint:
+                vehicle_params["carla.blueprint"] = carla_blueprint
 
-        if via_edge and via_edge not in (start_edge, end_edge):
-            first_leg = traci.simulation.findRoute(start_edge, via_edge).edges
-            second_leg = traci.simulation.findRoute(via_edge, end_edge).edges
+            requires_battery = (
+                str(vehicle_params.get("has.battery.device", "")).strip().lower()
+                in {"1", "true", "yes"}
+            )
+            if battery_charge_level is not None:
+                requires_battery = True
+                charge_level = max(0.0, float(battery_charge_level))
+                try:
+                    battery_capacity = float(
+                        vehicle_params.get(
+                            "device.battery.capacity",
+                            DEFAULT_EGO_BATTERY_CAPACITY,
+                        )
+                    )
+                except (TypeError, ValueError):
+                    battery_capacity = DEFAULT_EGO_BATTERY_CAPACITY
+                battery_capacity = max(battery_capacity, charge_level)
+                vehicle_params["has.battery.device"] = "true"
+                vehicle_params["device.battery.capacity"] = str(battery_capacity)
+                vehicle_params["device.battery.maximumBatteryCapacity"] = str(
+                    battery_capacity
+                )
+                vehicle_params["device.battery.chargeLevel"] = str(
+                    min(charge_level, battery_capacity)
+                )
+                vehicle_params["device.battery.actualBatteryCapacity"] = str(
+                    min(charge_level, battery_capacity)
+                )
+            if battery_failure_threshold is not None:
+                vehicle_params["dashboard.battery.failureThreshold"] = str(
+                    battery_failure_threshold
+                )
 
-            if not first_leg or not second_leg:
-                print("Route con via non valida")
+            spawn_vtype = self._spawn_vehicle_type_id(veh_id) if requires_battery else vtype
+            if not self._ensure_vehicle_type(
+                spawn_vtype,
+                carla_blueprint,
+                vtype_attrs,
+                vehicle_params,
+                source_type_id=vtype,
+            ):
                 return False
 
-            route = list(first_leg)
-            if route[-1] == second_leg[0]:
-                route.extend(second_leg[1:])
+            if via_edge and via_edge not in (start_edge, end_edge):
+                first_leg = traci.simulation.findRoute(start_edge, via_edge).edges
+                second_leg = traci.simulation.findRoute(via_edge, end_edge).edges
+
+                if not first_leg or not second_leg:
+                    print("Route con via non valida")
+                    return False
+
+                route = list(first_leg)
+                if route[-1] == second_leg[0]:
+                    route.extend(second_leg[1:])
+                else:
+                    route.extend(second_leg)
             else:
-                route.extend(second_leg)
-        else:
-            route = traci.simulation.findRoute(start_edge, end_edge).edges
+                route = traci.simulation.findRoute(start_edge, end_edge).edges
 
-        if not route:
-            print("Route non valida")
-            return False
+            if not route:
+                print("Route non valida")
+                return False
 
-        route_id = f"{veh_id}_route_{int(traci.simulation.getTime() * 1000)}"
-        if route_id in traci.route.getIDList():
-            route_id = f"{route_id}_{len(traci.route.getIDList())}"
+            route_id = f"{veh_id}_route_{int(traci.simulation.getTime() * 1000)}"
+            if route_id in traci.route.getIDList():
+                route_id = f"{route_id}_{len(traci.route.getIDList())}"
 
-        if veh_id in traci.vehicle.getIDList():
-            traci.vehicle.remove(veh_id)
+            if veh_id in traci.vehicle.getIDList():
+                traci.vehicle.remove(veh_id)
 
-        traci.route.add(route_id, route)
-        traci.vehicle.add(vehID=veh_id, routeID=route_id, typeID=vtype)
+            traci.route.add(route_id, route)
+            traci.vehicle.add(
+                vehID=veh_id,
+                routeID=route_id,
+                typeID=spawn_vtype,
+                depart="now",
+            )
 
-        vehicle_params = dict(vtype_params or {})
-        if carla_blueprint:
-            vehicle_params["carla.blueprint"] = carla_blueprint
+            has_battery_device = self._has_battery_device(veh_id, type_id=spawn_vtype)
+            if requires_battery and not has_battery_device:
+                try:
+                    traci.vehicle.remove(veh_id)
+                except traci.exceptions.TraCIException:
+                    pass
+                raise RuntimeError(
+                    f"SUMO inserted `{veh_id}` without a battery device despite vType `{spawn_vtype}`."
+                )
 
-        for key, value in vehicle_params.items():
-            if value is None or value == "":
-                continue
-            try:
-                traci.vehicle.setParameter(veh_id, key, str(value))
-            except traci.exceptions.TraCIException as error:
-                logging.warning("Could not set ego vehicle parameter %s=%s: %s", key, value, error)
+            battery_param_keys = {
+                "device.battery.capacity",
+                "device.battery.maximumBatteryCapacity",
+                "device.battery.chargeLevel",
+                "device.battery.actualBatteryCapacity",
+            }
 
-        return True
+            for key, value in vehicle_params.items():
+                if value is None or value == "":
+                    continue
+                if key in battery_param_keys and not has_battery_device:
+                    continue
+                try:
+                    traci.vehicle.setParameter(veh_id, key, str(value))
+                except traci.exceptions.TraCIException as error:
+                    logging.warning("Could not set ego vehicle parameter %s=%s: %s", key, value, error)
+
+            return True
 
     def get_vehicle_state(self, veh_id):
         """Return the live dashboard state for a SUMO vehicle."""
-        resolved_vehicle_id = self._resolve_vehicle_id(veh_id)
-        if resolved_vehicle_id is None:
-            return None
+        with self.traci_lock:
+            resolved_vehicle_id = self._resolve_vehicle_id(veh_id)
+            if resolved_vehicle_id is None:
+                return None
 
-        type_id = traci.vehicle.getTypeID(resolved_vehicle_id)
-        route_final_edge = None
-        distance_travelled_m = None
-        distance_remaining_m = None
-        battery = None
-        battery_failure_threshold = 0.0
-
-        try:
-            distance_travelled_m = float(traci.vehicle.getDistance(resolved_vehicle_id))
-        except (TypeError, ValueError, traci.exceptions.TraCIException):
-            pass
-
-        try:
-            route = traci.vehicle.getRoute(resolved_vehicle_id)
-            route_final_edge = route[-1] if route else None
-        except traci.exceptions.TraCIException:
+            type_id = traci.vehicle.getTypeID(resolved_vehicle_id)
             route_final_edge = None
+            distance_travelled_m = None
+            distance_remaining_m = None
+            battery = None
+            total_energy_consumed_wh = None
+            battery_failure_threshold = 0.0
+            has_battery_device = self._has_battery_device(
+                resolved_vehicle_id,
+                type_id=type_id,
+            )
 
-        if route_final_edge:
             try:
-                target_position = max(0.0, float(self.net.getEdge(route_final_edge).getLength()) - 0.1)
-                distance_remaining_m = float(
-                    traci.vehicle.getDrivingDistance(
-                        resolved_vehicle_id,
-                        route_final_edge,
-                        target_position,
+                distance_travelled_m = float(traci.vehicle.getDistance(resolved_vehicle_id))
+            except (TypeError, ValueError, traci.exceptions.TraCIException):
+                pass
+
+            try:
+                route = traci.vehicle.getRoute(resolved_vehicle_id)
+                route_final_edge = route[-1] if route else None
+            except traci.exceptions.TraCIException:
+                route_final_edge = None
+
+            if route_final_edge:
+                try:
+                    target_position = max(0.0, float(self.net.getEdge(route_final_edge).getLength()) - 0.1)
+                    distance_remaining_m = float(
+                        traci.vehicle.getDrivingDistance(
+                            resolved_vehicle_id,
+                            route_final_edge,
+                            target_position,
+                        )
                     )
-                )
-                if distance_remaining_m < -1e8:
+                    if distance_remaining_m < -1e8:
+                        distance_remaining_m = None
+                    elif distance_remaining_m is not None:
+                        distance_remaining_m = max(0.0, distance_remaining_m)
+                except (AttributeError, TypeError, ValueError, traci.exceptions.TraCIException):
                     distance_remaining_m = None
-                elif distance_remaining_m is not None:
-                    distance_remaining_m = max(0.0, distance_remaining_m)
-            except (AttributeError, TypeError, ValueError, traci.exceptions.TraCIException):
-                distance_remaining_m = None
 
-        if self._is_dashboard_battery_vehicle(resolved_vehicle_id, type_id=type_id):
-            try:
-                battery = float(
-                    traci.vehicle.getParameter(
-                        resolved_vehicle_id,
-                        "device.battery.chargeLevel",
+            if has_battery_device:
+                total_energy_consumed_wh = self._vehicle_parameter_float(
+                    resolved_vehicle_id,
+                    BATTERY_TOTAL_CONSUMPTION_KEYS,
+                )
+                capacity = self._vehicle_parameter_float(
+                    resolved_vehicle_id,
+                    BATTERY_MAXIMUM_KEYS,
+                )
+                battery = self._vehicle_charge_level(
+                    resolved_vehicle_id,
+                    capacity or DEFAULT_EGO_BATTERY_CAPACITY,
+                )
+                try:
+                    battery_failure_threshold = float(
+                        self._vehicle_failure_threshold(resolved_vehicle_id)
                     )
-                )
-            except (TypeError, ValueError, traci.exceptions.TraCIException):
-                pass
-            try:
-                battery_failure_threshold = float(
-                    self._vehicle_failure_threshold(resolved_vehicle_id)
-                )
-            except (TypeError, ValueError, traci.exceptions.TraCIException):
-                pass
+                except (TypeError, ValueError, traci.exceptions.TraCIException):
+                    pass
 
-        return {
-            "vehicle_id": str(resolved_vehicle_id),
-            "type_id": type_id,
-            "speed": traci.vehicle.getSpeed(resolved_vehicle_id),
-            "edge": traci.vehicle.getRoadID(resolved_vehicle_id),
-            "sim_time": traci.simulation.getTime(),
-            "route_final_edge": route_final_edge,
-            "distance_travelled_m": distance_travelled_m,
-            "distance_remaining_m": distance_remaining_m,
-            "battery": battery,
-            "battery_failure_threshold": battery_failure_threshold,
-        }
+            return {
+                "vehicle_id": str(resolved_vehicle_id),
+                "type_id": type_id,
+                "speed": traci.vehicle.getSpeed(resolved_vehicle_id),
+                "edge": traci.vehicle.getRoadID(resolved_vehicle_id),
+                "sim_time": traci.simulation.getTime(),
+                "route_final_edge": route_final_edge,
+                "distance_travelled_m": distance_travelled_m,
+                "distance_remaining_m": distance_remaining_m,
+                "battery": battery,
+                "total_energy_consumed_wh": total_energy_consumed_wh,
+                "has_battery_device": has_battery_device,
+                "battery_failure_threshold": battery_failure_threshold,
+            }
 
     def tick(self):
         """Advance the bridge and enforce dashboard battery-stop rules."""
-        super().tick()
+        with self.traci_lock:
+            super().tick()
 
-        for veh_id in traci.vehicle.getIDList():
-            type_id = traci.vehicle.getTypeID(veh_id)
-            if not self._is_dashboard_battery_vehicle(veh_id, type_id=type_id):
-                continue
-            if self._battery_stop_applied(veh_id):
-                continue
+            for veh_id in traci.vehicle.getIDList():
+                type_id = traci.vehicle.getTypeID(veh_id)
+                self._enforce_autoware_battery_once_after_motion(veh_id, type_id=type_id)
+                if not self._has_battery_device(veh_id, type_id=type_id):
+                    continue
+                if self._battery_stop_applied(veh_id):
+                    continue
 
-            state = self.get_vehicle_state(veh_id)
-            if not state:
-                continue
+                state = self.get_vehicle_state(veh_id)
+                if not state:
+                    continue
 
-            battery = state.get("battery")
-            threshold = float(state.get("battery_failure_threshold") or 0)
-            if threshold <= 0 or battery is None or float(battery) > threshold:
-                continue
+                battery = state.get("battery")
+                threshold = float(state.get("battery_failure_threshold") or 0)
+                if threshold <= 0 or battery is None or float(battery) > threshold:
+                    continue
 
-            self._request_battery_stop(veh_id, type_id=type_id)
+                self._request_battery_stop(veh_id, type_id=type_id)
 
 
 def patch_bridge_helper(bridge_helper):
@@ -710,6 +1006,14 @@ def patch_bridge_helper(bridge_helper):
         return
 
     original_get_carla_blueprint = bridge_helper.get_carla_blueprint
+    original_get_sumo_vtype = bridge_helper.get_sumo_vtype
+
+    def get_sumo_vtype(carla_actor):
+        """Map the Autoware-controlled CARLA ego to the battery-enabled SUMO vType."""
+        if DashboardSumoSimulation._is_autoware_carla_actor(carla_actor):
+            DashboardSumoSimulation._ensure_autoware_ego_type()
+            return AUTOWARE_EGO_VTYPE
+        return original_get_sumo_vtype(carla_actor)
 
     def get_carla_blueprint(sumo_actor, sync_color=False):
         """Resolve the CARLA blueprint to use for a dashboard-managed SUMO actor."""
@@ -745,5 +1049,6 @@ def patch_bridge_helper(bridge_helper):
         blueprint.set_attribute("role_name", "sumo_driver")
         return blueprint
 
+    bridge_helper.get_sumo_vtype = staticmethod(get_sumo_vtype)
     bridge_helper.get_carla_blueprint = staticmethod(get_carla_blueprint)
     bridge_helper._dashboard_blueprint_patch = True
