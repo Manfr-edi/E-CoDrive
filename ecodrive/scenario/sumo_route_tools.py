@@ -712,6 +712,82 @@ print(json.dumps({
         ) from exc
 
 
+def _ensure_autoware_dynamic_speed_limit(container_name):
+    """Ensure Autoware Mini reads the planner speed cap when a route is requested."""
+    docker_binary = shutil.which("docker")
+    patch_script = r"""
+import json
+from pathlib import Path
+
+patches = []
+
+lanelet_path = Path("/opt/catkin_ws/src/autoware_mini/nodes/planning/global/lanelet2/lanelet2_global_planner.py")
+lanelet_text = lanelet_path.read_text()
+lanelet_original = lanelet_text
+lanelet_marker = "        rospy.loginfo(\"%s - goal position (%f, %f, %f) orientation (%f, %f, %f, %f) in %s frame\", rospy.get_name(),"
+lanelet_refresh = "        self.speed_limit = rospy.get_param(\"speed_limit\", self.speed_limit)\n"
+if lanelet_refresh not in lanelet_text:
+    if lanelet_marker not in lanelet_text:
+        raise RuntimeError("Could not locate lanelet2_global_planner goal callback")
+    lanelet_text = lanelet_text.replace(lanelet_marker, lanelet_refresh + lanelet_marker, 1)
+    lanelet_path.write_text(lanelet_text)
+patches.append({
+    "path": str(lanelet_path),
+    "updated": lanelet_text != lanelet_original,
+})
+
+carla_path = Path("/opt/catkin_ws/src/autoware_mini/nodes/platform/carla/carla_waypoints_publisher.py")
+carla_text = carla_path.read_text()
+carla_original = carla_text
+carla_marker = "        msg = Path()\n        msg.header = data.header"
+carla_refresh = "        self.speed_limit = rospy.get_param(\"speed_limit\", self.speed_limit)\n"
+if carla_refresh not in carla_text:
+    if carla_marker not in carla_text:
+        raise RuntimeError("Could not locate carla_waypoints_publisher path callback")
+    carla_text = carla_text.replace(carla_marker, carla_refresh + carla_marker, 1)
+    carla_path.write_text(carla_text)
+patches.append({
+    "path": str(carla_path),
+    "updated": carla_text != carla_original,
+})
+
+print(json.dumps({
+    "patches": patches,
+    "updated": any(patch["updated"] for patch in patches),
+}))
+""".strip()
+    process = subprocess.run(
+        [
+            docker_binary,
+            "exec",
+            str(container_name),
+            "bash",
+            "-lc",
+            f"python3 -c {shlex.quote(patch_script)}",
+        ],
+        env=_docker_exec_env(),
+        capture_output=True,
+        text=True,
+    )
+    if process.returncode != 0:
+        details = " | ".join(
+            part
+            for part in (process.stderr.strip(), process.stdout.strip())
+            if part
+        )
+        raise RuntimeError(
+            "Could not prepare Autoware dynamic speed-limit handling inside the container: "
+            f"{details or 'unknown error'}"
+        )
+
+    try:
+        return json.loads(process.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "Autoware dynamic speed-limit setup completed but returned an invalid payload."
+        ) from exc
+
+
 def _ensure_autoware_spawn_point_passthrough(container_name):
     """Ensure start_carla.launch forwards the dashboard spawn_point argument unchanged."""
     docker_binary = shutil.which("docker")
@@ -960,6 +1036,7 @@ def publish_autoware_route_in_container(
         container = find_running_autoware_container(name_filter=name_filter)
         container_name = container.get("Names") or container.get("ID")
 
+    dynamic_speed_limit_setup = _ensure_autoware_dynamic_speed_limit(container_name)
     route_publication = _publish_autoware_route_in_container(
         container_name,
         initial_pose["pose"],
@@ -985,6 +1062,7 @@ def publish_autoware_route_in_container(
             if isinstance(route_publication, dict)
             else publish_initial_pose
         ),
+        "dynamic_speed_limit_setup": dynamic_speed_limit_setup,
         "route_publication": route_publication,
     }
 
@@ -1130,6 +1208,7 @@ def launch_autoware_carla_in_container(
     container_name = container.get("Names") or container.get("ID")
     docker_binary = shutil.which("docker")
     ensure_autoware_blueprint_available(container_name)
+    dynamic_speed_limit_setup = _ensure_autoware_dynamic_speed_limit(container_name)
     spawn_point_passthrough = None
     if spawn_point_data is not None:
         spawn_point_passthrough = _ensure_autoware_spawn_point_passthrough(container_name)
@@ -1236,6 +1315,7 @@ def launch_autoware_carla_in_container(
             speed_limit_value
         ),
         "planner_speed_limit_setup": planner_speed_limit_setup,
+        "dynamic_speed_limit_setup": dynamic_speed_limit_setup,
         "initial_pose": initial_pose,
         "goal_pose": goal_pose,
         "route_publication": route_publication,

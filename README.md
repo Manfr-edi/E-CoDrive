@@ -1,6 +1,6 @@
-# AEV-DriveLab
+# E-CoDrive
 
-AEV-DriveLab is a Streamlit-based tool for generating and running traffic scenarios that stress the energy consumption of autonomous electric vehicles. It combines SUMO traffic generation with CARLA co-simulation to study how route choice, congestion, traffic density, vehicle type, and battery configuration affect electric-vehicle consumption.
+E-CoDrive is a Streamlit-based tool for generating and running traffic scenarios that stress the energy consumption of autonomous electric vehicles. It combines SUMO traffic generation with CARLA co-simulation to study how route choice, congestion, traffic density, vehicle type, and battery configuration affect electric-vehicle consumption.
 
 The tool supports both a SUMO-managed ego vehicle workflow and an Autoware-based autonomous vehicle workflow, while keeping scenario generation, co-simulation launch, vehicle configuration, and monitoring in a single dashboard.
 
@@ -310,7 +310,7 @@ Monitoring exports are written under:
 ## 🧩 Repository Structure
 
 ```text
-AEV-DriveLab/
+E-CoDrive/
 ├── app.py                                  # Streamlit dashboard entry point and workflow stepper.
 ├── requirements.txt                        # Python dependencies for the dashboard and helpers.
 ├── aev_drivelab/                           # Main Python package.

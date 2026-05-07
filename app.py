@@ -16,7 +16,7 @@ from pathlib import Path
 from streamlit_folium import st_folium
 from urllib.parse import quote
 
-from aev_drivelab.scenario.sumo_route_tools import (
+from ecodrive.scenario.sumo_route_tools import (
     AUTOWARE_EGO_VTYPE,
     DEFAULT_CARLA_HOST,
     DEFAULT_CARLA_PORT,
@@ -469,6 +469,9 @@ def apply_selected_carla_version():
                 else:
                     selected_map = st.session_state.traffic_map_name
                     launch = start_carla_server(selected_version, map_name=selected_map)
+                    st.session_state.traffic_map_name = selected_map
+                    st.session_state.runtime_map_selection = selected_map
+                    st.session_state.applied_runtime_map = selected_map
                     st.session_state.carla_process = launch["process"]
                     st.session_state.carla_process_log = launch["log_file"]
                     message = (
@@ -2945,6 +2948,7 @@ def render_autoware_ego_vtype_editor():
                 "speed_limit_kmh": float(st.session_state.autoware_planner_speed_limit_kmh),
                 "battery_failure_threshold": float(battery_failure_threshold),
                 "planner_speed_limit_setup": launch.get("planner_speed_limit_setup"),
+                "dynamic_speed_limit_setup": launch.get("dynamic_speed_limit_setup"),
                 "route_deferred": launch.get("route_deferred"),
                 "route_publication": None,
                 "route_publication_error": None,
@@ -3007,6 +3011,14 @@ def render_autoware_ego_vtype_editor():
                 "Planner config written to "
                 f"`{planner_speed_limit_setup['planning_yaml']}` before `roslaunch`."
             )
+        dynamic_speed_limit_setup = launch.get("dynamic_speed_limit_setup") or {}
+        if dynamic_speed_limit_setup:
+            dynamic_status = (
+                "updated"
+                if dynamic_speed_limit_setup.get("updated")
+                else "already present"
+            )
+            st.caption(f"Dynamic route speed-cap handling: `{dynamic_status}`.")
         if sync_waiting_for_autoware:
             try:
                 spinner_message = (
@@ -3087,6 +3099,7 @@ def render_autoware_ego_vtype_editor():
                     "initial_pose": route.get("initial_pose"),
                     "goal_pose": route.get("goal_pose"),
                     "initial_pose_published": route.get("initial_pose_published"),
+                    "dynamic_speed_limit_setup": route.get("dynamic_speed_limit_setup"),
                 }
             )
             st.session_state.autoware_last_launch = updated_launch
