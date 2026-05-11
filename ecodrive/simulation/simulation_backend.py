@@ -2,8 +2,8 @@ import traci
 import subprocess
 import time
 
-from aev_drivelab.simulation.config import SUMO_BINARY, SUMO_CONFIG
-from aev_drivelab.simulation.ego_controller import stop_if_needed
+from ecodrive.simulation.config import SUMO_BINARY, SUMO_CONFIG
+from ecodrive.simulation.ego_controller import stop_if_needed
 
 class SimulationManager:
     """Manage the legacy direct SUMO simulation lifecycle."""

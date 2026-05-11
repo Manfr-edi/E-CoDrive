@@ -1,5 +1,5 @@
 import traci
-from aev_drivelab.simulation.config import EGO_ID, EGO_TYPE
+from ecodrive.simulation.config import EGO_ID, EGO_TYPE
 
 
 def spawn_ego(start_edge, end_edge):

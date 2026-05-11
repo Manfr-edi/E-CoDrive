@@ -12,7 +12,7 @@ import carla  # pylint: disable=import-error
 import traci  # pylint: disable=import-error
 
 from sumo_integration.sumo_simulation import SumoActorClass, SumoSimulation
-from aev_drivelab.scenario.sumo_route_tools import (
+from ecodrive.scenario.sumo_route_tools import (
     AUTOWARE_EGO_VTYPE,
     DEFAULT_EGO_BLUEPRINT,
     DEFAULT_EGO_BATTERY_CAPACITY,

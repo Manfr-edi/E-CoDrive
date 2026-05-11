@@ -2819,7 +2819,7 @@ def build_run_command(sumocfg_file, sumo_gui=True, wait_start_file=None):
     python_executable = resolve_carla_python_executable()
     command = [
         str(python_executable),
-        str(PROJECT_ROOT / "aev_drivelab" / "cosimulation" / "run_dashboard_synchronization.py"),
+        str(PROJECT_ROOT / "ecodrive" / "cosimulation" / "run_dashboard_synchronization.py"),
         "--carla-version",
         active_carla_version(),
         relative_to_sumo_dir(sumocfg_file),

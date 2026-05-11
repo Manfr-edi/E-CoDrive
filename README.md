@@ -1,18 +1,24 @@
 # E-CoDrive
 
-E-CoDrive is a Streamlit-based tool for generating and running traffic scenarios that stress the energy consumption of autonomous electric vehicles. It combines SUMO traffic generation with CARLA co-simulation to study how route choice, congestion, traffic density, vehicle type, and battery configuration affect electric-vehicle consumption.
+E-CoDrive is a co-simulation framework for energy-aware scenario-based testing of autonomous electric vehicles. It generates and executes reproducible urban driving scenarios in which traffic conditions, route choices, vehicle configuration, and battery models can expose energy-critical behaviors such as stop-and-go consumption, regenerative braking, and premature battery depletion.
 
-The tool supports both a SUMO-managed ego vehicle workflow and an Autoware-based autonomous vehicle workflow, while keeping scenario generation, co-simulation launch, vehicle configuration, and monitoring in a single dashboard.
+The framework integrates SUMO traffic generation, CARLA high-fidelity simulation, and an optional Autoware Mini autonomous driving stack through a unified orchestration layer with a shared simulation timeline. A Streamlit dashboard guides scenario generation, co-simulation launch, vehicle configuration, and energy monitoring for both SUMO-managed and Autoware-based ego-vehicle workflows.
 
-## 🧪 Tested Environment
+## 🧪 Tested System and Environment
 
-This repository is currently tested on:
+This repository is currently tested on the following host system:
 
+- CPU: Intel Core `i9-13900KF`
+- RAM: `64 GB`
+- GPU: NVIDIA GeForce `RTX 5080`
+
+and with the following operating system and software:
 - Ubuntu `24.04`
 - Python `3.8`
 - Docker `29.4.1`
 - Docker Compose `5.1.1`
 - SUMO `1.26`
+
 
 ## ⚙️ Requirements and Setup
 
@@ -198,7 +204,22 @@ Generation parameters:
 
 The step writes the route file and the custom SUMO configuration used by the co-simulation.
 
-### 3A. SUMO Ego Vehicle (`CARLA 0.9.15`)
+
+### 3A. Configure Simulation (`CARLA 0.9.13` with Autoware Mini)
+
+Use this step to arm the SUMO/CARLA bridge before launching Autoware.
+
+Main options:
+
+- `SUMO GUI`: toggles SUMO graphical mode.
+- `Autoware startup wait [s]`: warm-up delay used when SUMO runs headless.
+- `Start simulation`: starts the bridge and waits for Autoware before simulation time advances.
+- `Stop co-simulation`: terminates the bridge process.
+
+In the Autoware workflow, start this step before running Autoware from the ego configuration step.
+
+
+### 3B. SUMO Ego Vehicle (`CARLA 0.9.15`)
 
 Use this step when the ego vehicle is managed directly through SUMO and the dashboard backend.
 
@@ -225,19 +246,6 @@ Vehicle options:
 - Detailed SUMO vType attributes and parameters.
 
 Click `Spawn Ego Vehicle` after the co-simulation backend is active.
-
-### 3B. Configure Simulation (`CARLA 0.9.13` / Autoware)
-
-Use this step to arm the SUMO/CARLA bridge before launching Autoware.
-
-Main options:
-
-- `SUMO GUI`: toggles SUMO graphical mode.
-- `Autoware startup wait [s]`: warm-up delay used when SUMO runs headless.
-- `Start simulation`: starts the bridge and waits for Autoware before simulation time advances.
-- `Stop co-simulation`: terminates the bridge process.
-
-In the Autoware workflow, start this step before running Autoware from the ego configuration step.
 
 ### 4. Ego vType / Autoware (`CARLA 0.9.13`)
 
@@ -313,7 +321,7 @@ Monitoring exports are written under:
 E-CoDrive/
 ├── app.py                                  # Streamlit dashboard entry point and workflow stepper.
 ├── requirements.txt                        # Python dependencies for the dashboard and helpers.
-├── aev_drivelab/                           # Main Python package.
+├── ecodrive/                               # Main Python package.
 │   ├── scenario/
 │   │   └── sumo_route_tools.py             # SUMO route generation, map helpers, CARLA discovery, and Autoware launch helpers.
 │   ├── cosimulation/
@@ -357,7 +365,7 @@ The synchronization command is launched from:
 and uses the dashboard runner in:
 
 ```text
-<repo_root>/aev_drivelab/cosimulation/run_dashboard_synchronization.py
+<repo_root>/ecodrive/cosimulation/run_dashboard_synchronization.py
 ```
 
 Main dashboard API endpoints exposed on `localhost:5000` during co-simulation:

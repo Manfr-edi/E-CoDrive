@@ -16,6 +16,7 @@ from pathlib import Path
 from streamlit_folium import st_folium
 from urllib.parse import quote
 
+from ecodrive.analysis.battery_plots import generate_battery_plots
 from ecodrive.scenario.sumo_route_tools import (
     AUTOWARE_EGO_VTYPE,
     DEFAULT_CARLA_HOST,
@@ -62,10 +63,12 @@ API_URL = "http://localhost:5000"
 AUTOWARE_ALLOWED_MAPS = ("Town01", "Town04", "Town05")
 STEP_CARLA_LABEL = "1. Start CARLA"
 STEP_ROUTES_LABEL = "2. Generate SUMO Routes"
+STEP_PLOT_OUTPUT_LABEL = "4. Plot Output"
 STEP_MONITORING_LABEL = "5. Monitoring"
 EGO_ROUTE_VIA = "Pass through congested edge"
 EGO_ROUTE_FROM_CONGESTION = "Use congested edge as start"
 EGO_ROUTE_TO_CONGESTION = "Use congested edge as destination"
+EDGE_SELECTION_MAP_HEIGHT = 680
 BASE_EGO_COLORS = [
     "white",
     "black",
@@ -79,6 +82,14 @@ BASE_EGO_COLORS = [
     "cyan",
     "magenta",
 ]
+SHOW_TRAFFIC_SIMULATION_END_INPUT = False
+SHOW_TRAFFIC_SPAWN_DISTRIBUTION_INPUT = False
+SHOW_SIMULATION_STEP_TAB = False
+SHOW_AUTOWARE_VEHICLE_TYPE_INPUT = False
+SHOW_AUTOWARE_SPEED_CAP_INPUT = False
+SHOW_SUMO_GUI_INPUT = False
+SHOW_AUTOWARE_STARTUP_WAIT_INPUT = False
+SHOW_MONITORING_TAB = False
 EGO_NUMERIC_LIMITS = {
     "minGap": (0.0, 20.0, 0.1),
     "maxSpeed": (0.1, 100.0, 0.1),
@@ -273,6 +284,8 @@ for key, default in {
     "monitoring_samples": [],
     "monitoring_summary": None,
     "monitoring_export_paths": None,
+    "plot_output_paths": None,
+    "plot_output_source": None,
     "monitoring_session_token": None,
     "monitoring_saved_session_token": None,
     "monitoring": False,
@@ -362,6 +375,17 @@ for key, default in {
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
+
+for emission_state_key in (
+    "ego_emission_model",
+    "ego_last_emission_model",
+    "autoware_ego_emission_model",
+    "autoware_ego_last_emission_model",
+    "live_vehicle_emission_model",
+    "live_vehicle_last_emission_model",
+):
+    if st.session_state[emission_state_key] not in {ENERGY_EMISSION_CLASS, MMPEVEM_EMISSION_CLASS}:
+        st.session_state[emission_state_key] = ENERGY_EMISSION_CLASS
 
 
 def apply_selected_carla_version():
@@ -564,6 +588,66 @@ def sumo_runtime_output_dir():
     if base_dir is None:
         return Path(__file__).resolve().parent / "output"
     return Path(base_dir) / "examples" / "output"
+
+
+def battery_output_path():
+    """Return the active SUMO battery output path."""
+    return sumo_runtime_output_dir() / "battery.out.xml"
+
+
+def is_sumo_simulation_running():
+    """Return whether the dashboard-launched SUMO/CARLA process is still active."""
+    sync_process = st.session_state.get("traffic_process")
+    return bool(sync_process is not None and sync_process.poll() is None)
+
+
+def plot_output_available():
+    """Return whether battery plots can be generated without reading a live SUMO file."""
+    path = battery_output_path()
+    if not path.exists() or path.stat().st_size == 0 or is_sumo_simulation_running():
+        return False
+    return "<vehicle" in _read_text(path)
+
+
+def render_plot_output():
+    """Generate and render battery-output plots for the latest completed SUMO run."""
+    st.subheader("📈 Plot Output")
+
+    if is_sumo_simulation_running():
+        st.info("Plot output will be available after the SUMO/CARLA simulation process stops.")
+        return
+
+    source_path = battery_output_path()
+    if not source_path.exists() or source_path.stat().st_size == 0 or "<vehicle" not in _read_text(source_path):
+        st.warning("No completed battery vehicle records are available yet.")
+        st.caption(f"Expected source: `{source_path}`")
+        return
+
+    output_dir = sumo_runtime_output_dir() / "plots"
+    try:
+        plot_paths = generate_battery_plots(
+            source_path,
+            output_dir,
+            prefix="battery",
+        )
+    except Exception as exc:
+        st.error(f"Could not generate battery plots: {exc}")
+        st.caption(f"Battery source: `{source_path}`")
+        return
+
+    st.session_state.plot_output_paths = [str(path) for path in plot_paths]
+    st.session_state.plot_output_source = str(source_path)
+
+    st.caption(f"Battery source: `{source_path}`")
+    st.caption(f"Plots saved in `{output_dir}`.")
+
+    captions = [
+        "Energy consumed per timestep",
+        "Total energy consumed",
+        "Actual battery capacity",
+    ]
+    for plot_path, caption in zip(plot_paths, captions):
+        st.image(str(plot_path), caption=caption, use_container_width=True)
 
 
 def _format_number(value, unit="", precision=1):
@@ -1394,7 +1478,7 @@ def render_monitoring_result_tabs(selected_vehicle_id=None):
 def vehicle_setup_step_label():
     """Return the label for the vehicle-setup step based on the active workflow."""
     if active_carla_version() == "0.9.13":
-        return "4. Launch Autoware AV"
+        return "3. Launch Autoware AV"
     return "3. Spawn SUMO Ego Vehicle"
 
 
@@ -1470,6 +1554,9 @@ def sync_launch_widget_defaults():
     """Initialize default widget values for the synchronization launcher."""
     if st.session_state.traffic_carla_mode_selection not in {"reuse", "prepare"}:
         st.session_state.traffic_carla_mode_selection = st.session_state.traffic_carla_mode
+    if not SHOW_SUMO_GUI_INPUT:
+        st.session_state.traffic_sumo_gui = True
+        st.session_state.traffic_sumo_gui_selection = True
     if not isinstance(st.session_state.traffic_sumo_gui_selection, bool):
         st.session_state.traffic_sumo_gui_selection = bool(st.session_state.traffic_sumo_gui)
     if not isinstance(st.session_state.traffic_carla_timeout_selection, int):
@@ -2442,7 +2529,7 @@ def render_ego_vehicle_config():
         )
     with top_cols[1]:
         emission_model = st.selectbox(
-            "Emission model",
+            "Energy model",
             options=[ENERGY_EMISSION_CLASS, MMPEVEM_EMISSION_CLASS],
             key="ego_emission_model",
         )
@@ -2547,21 +2634,23 @@ def render_autoware_ego_vtype_editor():
     sumo_gui_enabled = bool(st.session_state.traffic_sumo_gui)
     autoware_delay = effective_autoware_startup_wait_seconds(sumo_gui_enabled)
 
-    top_cols = st.columns([2, 1, 1])
-    with top_cols[0]:
-        st.text_input(
-            "SUMO/CARLA vehicle type",
-            value=AUTOWARE_EGO_VTYPE,
-            key="autoware_ego_carla_blueprint",
-            disabled=True,
-        )
-    with top_cols[1]:
+    top_cols = st.columns([1, 1])
+    if SHOW_AUTOWARE_VEHICLE_TYPE_INPUT:
+        top_cols = st.columns([2, 1, 1])
+        with top_cols[0]:
+            st.text_input(
+                "SUMO/CARLA vehicle type",
+                value=AUTOWARE_EGO_VTYPE,
+                key="autoware_ego_carla_blueprint",
+                disabled=True,
+            )
+    with top_cols[-2]:
         emission_model = st.selectbox(
             "Emission model",
             options=[ENERGY_EMISSION_CLASS, MMPEVEM_EMISSION_CLASS],
             key="autoware_ego_emission_model",
         )
-    with top_cols[2]:
+    with top_cols[-1]:
         battery_capacity = st.number_input(
             "Max battery capacity [Wh]",
             min_value=1.0,
@@ -2611,6 +2700,21 @@ def render_autoware_ego_vtype_editor():
     if st.session_state.autoware_ego_last_emission_model != emission_model:
         reset_vtype_model_state("autoware_ego", emission_model)
         st.session_state.autoware_ego_last_emission_model = emission_model
+
+    attribute_defaults, parameter_defaults = ego_model_defaults(emission_model)
+
+    with st.expander("Ego vType parameters", expanded=False):
+        st.caption(
+            "This updates the SUMO/vtypes metadata associated with the Autoware ego vehicle."
+        )
+        st.write("Attributes")
+        attributes = parameter_input_grid(attribute_defaults, "autoware_ego_attr")
+        st.write("Parameters")
+        parameters = parameter_input_grid(
+            parameter_defaults,
+            "autoware_ego_param",
+            text_area_keys=("powerLossMap",),
+        )
 
     # Autoware Mini is a ROS 1 stack. Start and goal edges are converted into a
     # ROS initial pose and a ROS navigation goal after the docker launch starts.
@@ -2680,7 +2784,7 @@ def render_autoware_ego_vtype_editor():
     route_map_data = st_folium(
         route_map,
         use_container_width=True,
-        height=420,
+        height=EDGE_SELECTION_MAP_HEIGHT,
         key=f"autoware_route_map_{selected_map_name}",
     )
 
@@ -2811,36 +2915,22 @@ def render_autoware_ego_vtype_editor():
             st.session_state.autoware_goal_edge = goal_opposite
             st.rerun()
 
-    st.number_input(
-        "Autoware planner speed cap [km/h]",
-        min_value=5.0,
-        max_value=130.0,
-        value=50.0,
-        step=1.0,
-        key="autoware_planner_speed_limit_kmh",
-        help=(
-            "Autoware Mini uses map speed limits only if the Lanelet2 map contains them. "
-            "These Town01/Town04/Town05 maps currently do not, so this value acts as the effective route speed cap."
-        ),
-    )
-    st.caption(
-        "The current Lanelet2 Town maps do not expose per-lane `speed_limit` or `speed_ref` tags, "
-        "so the planner falls back to the configured global cap loaded at Autoware startup."
-    )
-
-    attribute_defaults, parameter_defaults = ego_model_defaults(emission_model)
-
-    with st.expander("Autoware ego vType parameters", expanded=False):
-        st.caption(
-            "This updates the SUMO/vtypes metadata associated with the Autoware ego vehicle."
+    if SHOW_AUTOWARE_SPEED_CAP_INPUT:
+        st.number_input(
+            "Autoware planner speed cap [km/h]",
+            min_value=5.0,
+            max_value=130.0,
+            value=50.0,
+            step=1.0,
+            key="autoware_planner_speed_limit_kmh",
+            help=(
+                "Autoware Mini uses map speed limits only if the Lanelet2 map contains them. "
+                "These Town01/Town04/Town05 maps currently do not, so this value acts as the effective route speed cap."
+            ),
         )
-        st.write("Attributes")
-        attributes = parameter_input_grid(attribute_defaults, "autoware_ego_attr")
-        st.write("Parameters")
-        parameters = parameter_input_grid(
-            parameter_defaults,
-            "autoware_ego_param",
-            text_area_keys=("powerLossMap",),
+        st.caption(
+            "The current Lanelet2 Town maps do not expose per-lane `speed_limit` or `speed_ref` tags, "
+            "so the planner falls back to the configured global cap loaded at Autoware startup."
         )
 
     st.info(
@@ -2849,11 +2939,16 @@ def render_autoware_ego_vtype_editor():
     if scenario_result is None:
         st.caption("Generate a SUMO scenario in step 2 before starting the synchronized launch.")
     else:
-        gui_label = "enabled" if st.session_state.traffic_sumo_gui else "disabled"
-        st.caption(
-            f"Step 3 will reuse the running CARLA instance on map `{scenario_result.map_name}` "
-            f"with SUMO GUI {gui_label}."
-        )
+        if SHOW_SUMO_GUI_INPUT:
+            gui_label = "enabled" if st.session_state.traffic_sumo_gui else "disabled"
+            st.caption(
+                f"Step 2 will reuse the running CARLA instance on map `{scenario_result.map_name}` "
+                f"with SUMO GUI {gui_label}."
+            )
+        else:
+            st.caption(
+                f"Step 2 will reuse the running CARLA instance on map `{scenario_result.map_name}`."
+            )
     if sync_waiting_for_autoware:
         st.info(
             "SUMO/CARLA is already armed from step 3 and waiting for Autoware. "
@@ -2864,27 +2959,28 @@ def render_autoware_ego_vtype_editor():
             "SUMO/CARLA is already running. Autoware will attach to the existing CARLA ticks "
             "instead of driving the simulator clock itself."
         )
-    if sumo_gui_enabled:
-        st.caption(
-            "SUMO GUI is enabled, so the Autoware startup wait is disabled and the simulation "
-            "is released immediately when you click `Spawn Autoware`."
-        )
-    else:
-        st.caption(f"Autoware startup wait is `{autoware_delay}s`.")
+    if SHOW_SUMO_GUI_INPUT or SHOW_AUTOWARE_STARTUP_WAIT_INPUT:
+        if sumo_gui_enabled:
+            st.caption(
+                "SUMO GUI is enabled, so the Autoware startup wait is disabled and the simulation "
+                "is released immediately when you click `Spawn Autoware`."
+            )
+        else:
+            st.caption(f"Autoware startup wait is `{autoware_delay}s`.")
 
     route_start_edge = st.session_state.autoware_start_edge
     route_goal_edge = st.session_state.autoware_goal_edge
     action_cols = st.columns(3)
     with action_cols[0]:
-        save_clicked = st.button("Save ego vType in vtypes.json")
+        save_clicked = st.button("Save ego vType") # in vtypes.json
     with action_cols[1]:
         spawn_clicked = st.button(
-            "Spawn Autoware",
+            "Spawn Ego Vehicle",
             disabled=not battery_threshold_valid,
         )
     with action_cols[2]:
         route_clicked = st.button(
-            "Start Autoware route",
+            "Start Ego Vehicle route",
             disabled=not (route_start_edge and route_goal_edge),
         )
 
@@ -3222,7 +3318,7 @@ def render_live_vehicle_vtype_config(veh_id):
         )
     with top_cols[1]:
         emission_model = st.selectbox(
-            "Emission model",
+            "Energy model",
             options=[ENERGY_EMISSION_CLASS, MMPEVEM_EMISSION_CLASS],
             key="live_vehicle_emission_model",
         )
@@ -3411,7 +3507,7 @@ def render_traffic_scenario(show_runner=True):
     map_data = st_folium(
         m,
         use_container_width=True,
-        height=460,
+        height=EDGE_SELECTION_MAP_HEIGHT,
         key=f"traffic_map_{map_name}",
     )
 
@@ -3533,7 +3629,7 @@ def render_traffic_scenario(show_runner=True):
 
 
 
-    param_cols = st.columns(5)
+    param_cols = st.columns(4)
     with param_cols[0]:
         vehicle_count = st.number_input(
             "Vehicles Number",
@@ -3548,8 +3644,12 @@ def render_traffic_scenario(show_runner=True):
     with param_cols[2]:
         end = st.number_input("Stop spawn at t[s]", min_value=0.0, value=120.0, step=1.0)
     with param_cols[3]:
-        if float(st.session_state.traffic_simulation_end) < float(end):
-            st.session_state.traffic_simulation_end = float(end)
+        seed = st.number_input("Seed", min_value=0, max_value=999999, value=42, step=1)
+
+    if float(st.session_state.traffic_simulation_end) < float(end):
+        st.session_state.traffic_simulation_end = float(end)
+    simulation_end = float(st.session_state.traffic_simulation_end)
+    if SHOW_TRAFFIC_SIMULATION_END_INPUT:
         simulation_end = st.number_input(
             "Simulation end t[s]",
             min_value=float(end),
@@ -3557,14 +3657,14 @@ def render_traffic_scenario(show_runner=True):
             key="traffic_simulation_end",
             help="Written as `<time><end>` in the generated custom SUMO configuration.",
         )
-    with param_cols[4]:
-        seed = st.number_input("Seed", min_value=0, max_value=999999, value=42, step=1)
 
-    spawn_pattern = st.selectbox(
-        "Spawn distribution",
-        ["Equidistant", "Randomly", "All together"],
-        disabled=mode == "Random Traffic",
-    )
+    spawn_pattern = "Equidistant"
+    if SHOW_TRAFFIC_SPAWN_DISTRIBUTION_INPUT:
+        spawn_pattern = st.selectbox(
+            "Spawn distribution",
+            ["Equidistant", "Randomly", "All together"],
+            disabled=mode == "Random Traffic",
+        )
 
     vtype_options = get_sumo_vtypes()
     if not vtype_options:
@@ -3598,7 +3698,7 @@ def render_traffic_scenario(show_runner=True):
     if not can_generate:
         st.warning("Select the edge to congestion.")
 
-    if st.button("Generate route and custom sumocfg", disabled=not can_generate):
+    if st.button("Generate route and SUMO Configuration", disabled=not can_generate):
         try:
             if mode == "Congestion Edge":
                 result = generate_congestion_scenario(
@@ -3711,14 +3811,20 @@ def render_simulation_runner(result=None):
                     f"{launch_state['remaining_seconds']:.1f}s of startup wait remain."
                 )
         else:
-            st.warning("Start simulation here first to arm SUMO/CARLA, then launch Autoware from step 4.")
+            st.warning("Start simulation here first to arm SUMO/CARLA, then launch Autoware from step 3.")
 
-    sumo_gui = st.checkbox(
-        "SUMO GUI",
-        key="traffic_sumo_gui_selection",
-        help="Disable this to run SUMO headless.",
-    )
-    if autoware_workflow:
+    if SHOW_SUMO_GUI_INPUT:
+        sumo_gui = st.checkbox(
+            "SUMO GUI",
+            key="traffic_sumo_gui_selection",
+            help="Disable this to run SUMO headless.",
+        )
+    else:
+        st.session_state.traffic_sumo_gui = True
+        st.session_state.traffic_sumo_gui_selection = True
+        sumo_gui = True
+
+    if autoware_workflow and SHOW_AUTOWARE_STARTUP_WAIT_INPUT:
         st.number_input(
             "Autoware startup wait [s]",
             min_value=0,
@@ -3732,8 +3838,8 @@ def render_simulation_runner(result=None):
             ),
         )
     st.session_state.traffic_carla_mode = "reuse"
-    st.session_state.traffic_sumo_gui = bool(st.session_state.traffic_sumo_gui_selection)
-    if autoware_workflow:
+    st.session_state.traffic_sumo_gui = bool(sumo_gui)
+    if autoware_workflow and SHOW_AUTOWARE_STARTUP_WAIT_INPUT:
         st.session_state.autoware_sync_delay_seconds = int(
             st.session_state.autoware_sync_delay_selection
         )
@@ -3911,7 +4017,7 @@ def render_setup():
     map_data = st_folium(
         m,
         use_container_width=True,
-        height=500,
+        height=EDGE_SELECTION_MAP_HEIGHT,
         key="network_map",
     )
 
@@ -4309,10 +4415,13 @@ if autoware_workflow:
     section_options = [
         STEP_CARLA_LABEL,
         STEP_ROUTES_LABEL,
-        simulation_step,
         vehicle_step,
-        STEP_MONITORING_LABEL,
     ]
+    if SHOW_SIMULATION_STEP_TAB:
+        section_options.insert(2, simulation_step)
+    section_options.append(STEP_PLOT_OUTPUT_LABEL)
+    if SHOW_MONITORING_TAB:
+        section_options.append(STEP_MONITORING_LABEL)
     workflow_caption = (
         "Follow the workflow from left to right: start CARLA, generate SUMO routes, "
         "configure the run, then launch Autoware and start the co-simulation."
@@ -4322,9 +4431,12 @@ else:
         STEP_CARLA_LABEL,
         STEP_ROUTES_LABEL,
         vehicle_step,
-        simulation_step,
-        STEP_MONITORING_LABEL,
     ]
+    if SHOW_SIMULATION_STEP_TAB:
+        section_options.insert(3, simulation_step)
+    section_options.append(STEP_PLOT_OUTPUT_LABEL)
+    if SHOW_MONITORING_TAB:
+        section_options.append(STEP_MONITORING_LABEL)
     workflow_caption = (
         "Follow the workflow from left to right: start CARLA, generate SUMO routes, "
         "prepare the vehicle, then run the co-simulation."
@@ -4334,8 +4446,12 @@ if current_section not in section_options:
     mapped_section = None
     if current_section:
         current_title = current_section.split(". ", 1)[-1]
-        if "Simulation" in current_title:
+        if "Simulation" in current_title and SHOW_SIMULATION_STEP_TAB:
             mapped_section = simulation_step
+        elif "Simulation" in current_title:
+            mapped_section = STEP_ROUTES_LABEL
+        elif "Plot Output" in current_title:
+            mapped_section = STEP_PLOT_OUTPUT_LABEL
         elif "Autoware" in current_title or "SUMO Ego Vehicle" in current_title:
             mapped_section = vehicle_step
     st.session_state.dashboard_section = mapped_section or STEP_CARLA_LABEL
@@ -4359,7 +4475,7 @@ if section == STEP_CARLA_LABEL:
         render_carla_step()
 elif section == STEP_ROUTES_LABEL:
         preserve_scroll_position("dashboard_routes_step_scroll_position")
-        render_traffic_scenario(show_runner=False)
+        render_traffic_scenario(show_runner=True)
 elif section == simulation_step:
         preserve_scroll_position("dashboard_simulation_step_scroll_position")
         render_simulation_runner()
@@ -4369,5 +4485,8 @@ elif section == vehicle_step:
             render_autoware_ego_vtype_editor()
         else:
             render_setup()
+elif section == STEP_PLOT_OUTPUT_LABEL:
+        preserve_scroll_position("dashboard_plot_output_step_scroll_position")
+        render_plot_output()
 else:
         render_monitoring()
