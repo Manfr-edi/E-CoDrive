@@ -2,7 +2,7 @@
 
 E-CoDrive is a co-simulation framework for energy-aware scenario-based testing of autonomous electric vehicles. It generates and executes reproducible urban driving scenarios in which traffic conditions, route choices, vehicle configuration, and battery models can expose energy-critical behaviors such as stop-and-go consumption, regenerative braking, and premature battery depletion.
 
-The framework integrates SUMO traffic generation, CARLA high-fidelity simulation, and an optional Autoware Mini autonomous driving stack through a unified orchestration layer with a shared simulation timeline. A Streamlit dashboard guides scenario generation, co-simulation launch, vehicle configuration, and energy monitoring for both SUMO-managed and Autoware-based ego-vehicle workflows.
+The framework integrates SUMO traffic generation, CARLA high-fidelity simulation, and an optional Autoware Mini autonomous driving stack through a unified orchestration layer with a shared simulation timeline. A Streamlit dashboard guides scenario generation, co-simulation launch, vehicle configuration, and energy-output plotting for both SUMO-managed and Autoware-based ego-vehicle workflows.
 
 ## 🧪 Tested System and Environment
 
@@ -161,10 +161,10 @@ The dashboard is organized as an execution stepper. Each step corresponds to one
 
 The available steps depend on the selected CARLA version:
 
-- `CARLA 0.9.15`: `Start CARLA` -> `Generate SUMO Routes` -> `SUMO Ego Vehicle` -> `Run Simulation` -> `Monitoring`
-- `CARLA 0.9.13`: `Start CARLA` -> `Generate SUMO Routes` -> `Configure Simulation` -> `Ego vType / Autoware` -> `Monitoring`
+- `CARLA 0.9.15`: `Start CARLA` -> `Generate SUMO Routes` -> `Spawn SUMO Ego Vehicle` -> `Plot Output`
+- `CARLA 0.9.13`: `Start CARLA` -> `Generate SUMO Routes` -> `Launch Autoware AV` -> `Plot Output`
 
-The workflow below describes the standard autonomous-vehicle experiment: generate traffic, create or select congestion, configure the ego vehicle, run SUMO/CARLA, and monitor energy consumption.
+The workflow below describes the standard autonomous-vehicle experiment: generate traffic, create or select congestion, start the SUMO/CARLA co-simulation, configure the ego vehicle, and plot the energy outputs after the run completes.
 
 ### 1. Start CARLA
 
@@ -198,28 +198,21 @@ Generation parameters:
 - `Vehicles Number`: requested number of traffic vehicles.
 - `Start spawn at t[s]` and `Stop spawn at t[s]`: departure time interval.
 - `Seed`: deterministic random seed.
-- `Spawn distribution`: equidistant, random, or all together for congestion scenarios.
 - `Random vType`: assigns a random SUMO vehicle type to each generated vehicle.
 - `SUMO vType`: uses a fixed vehicle type when random assignment is disabled.
 
-The step writes the route file and the custom SUMO configuration used by the co-simulation.
+The step writes the route file and the custom SUMO configuration used by the co-simulation. After a route scenario has been generated, the same tab also exposes the SUMO/CARLA launch controls:
 
+- `Start simulation` / `Run co-simulation`: loads the selected Town in CARLA and starts the SUMO/CARLA synchronization for the generated scenario.
+- `Stop co-simulation`: terminates the running synchronization process.
 
-### 3A. Configure Simulation (`CARLA 0.9.13` with Autoware Mini)
+For the Autoware workflow, start SUMO/CARLA from this tab before launching the Autoware AV from the next step.
 
-Use this step to arm the SUMO/CARLA bridge before launching Autoware.
+### 3. Workflow-Specific Ego Setup
 
-Main options:
+The third step changes according to the selected CARLA version.
 
-- `SUMO GUI`: toggles SUMO graphical mode.
-- `Autoware startup wait [s]`: warm-up delay used when SUMO runs headless.
-- `Start simulation`: starts the bridge and waits for Autoware before simulation time advances.
-- `Stop co-simulation`: terminates the bridge process.
-
-In the Autoware workflow, start this step before running Autoware from the ego configuration step.
-
-
-### 3B. SUMO Ego Vehicle (`CARLA 0.9.15`)
+#### Spawn SUMO Ego Vehicle (`CARLA 0.9.15`)
 
 Use this step when the ego vehicle is managed directly through SUMO and the dashboard backend.
 
@@ -247,7 +240,7 @@ Vehicle options:
 
 Click `Spawn Ego Vehicle` after the co-simulation backend is active.
 
-### 4. Ego vType / Autoware (`CARLA 0.9.13`)
+#### Launch Autoware AV (`CARLA 0.9.13`)
 
 Use this step to configure the Autoware ego vehicle and launch the Autoware stack.
 
@@ -270,26 +263,20 @@ Route options:
 
 Actions:
 
-- `Save ego vType in vtypes.json`: persists the Autoware vehicle type metadata.
-- `Run Autoware`: launches Autoware in the Docker container, publishes the initial pose and goal when both edges are selected, and releases the waiting SUMO/CARLA simulation after the configured warm-up.
+- `Save ego vType`: persists the Autoware vehicle type metadata in `vtypes.json`.
+- `Spawn Ego Vehicle`: launches the Autoware-controlled ego vehicle in the Docker container (Note: has to be started before running SUMO simulation)..
+- `Start Ego Vehicle route`: publishes the selected start and goal route for the Autoware planner.
 
-### 5. Monitoring
+### 4. Plot Output
 
-Use this step to monitor the ego vehicle or a CARLA-spawned SUMO vehicle during the experiment.
+Use this step only after the simulation has finished (if the ego vehicle completed its trip, you can manually 
+stop the simulation). The tab reads the completed `battery.out.xml` file and generates the battery plots for the latest run.
 
-Available outputs:
+Generated plots:
 
-- Battery level over time.
-- Energy consumed over time.
-- Vehicle ID, current speed, current SUMO edge, and remaining distance.
-- Events such as battery depletion or destination reached.
-- Persisted monitoring summary after stop, target change, or terminal event.
-
-Main options:
-
-- `Refresh rate (ms)`: polling interval.
-- `Start Monitoring`: clears previous samples and starts a new session.
-- `Stop Monitoring`: stops polling and persists the session summary.
+- Instantaneous energy consumption during the simulation, accounting for both consumed energy and regenerative recovery.
+- Total energy consumed over time.
+- Battery charge level over time.
 
 ## 📁 Generated Files
 
@@ -309,10 +296,17 @@ Main log files:
 <carla_install_dir>/Co-Simulation/Sumo/examples/output/run_dashboard_synchronization.log
 ```
 
-Monitoring exports are written under:
+Simulation outputs include:
 
 ```text
-<carla_install_dir>/Co-Simulation/Sumo/examples/output/monitoring/
+<carla_install_dir>/Co-Simulation/Sumo/examples/output/battery.out.xml
+<carla_install_dir>/Co-Simulation/Sumo/examples/output/tripinfos.xml
+```
+
+Battery plots are written under:
+
+```text
+<carla_install_dir>/Co-Simulation/Sumo/examples/output/plots/
 ```
 
 ## 🧩 Repository Structure
@@ -327,7 +321,7 @@ E-CoDrive/
 │   ├── cosimulation/
 │   │   ├── backend_bridge.py               # Starts and manages the dashboard co-simulation backend process.
 │   │   ├── dashboard_backend.py            # Flask API exposed to the Streamlit dashboard during co-simulation.
-│   │   ├── dashboard_sumo.py               # Ego vehicle management, monitoring data extraction, and battery handling.
+│   │   ├── dashboard_sumo.py               # Ego vehicle management, SUMO output extraction, and battery handling.
 │   │   └── run_dashboard_synchronization.py # Dashboard-specific SUMO/CARLA synchronization runner.
 │   └── simulation/
 │       ├── config.py                       # Shared simulation configuration values.
