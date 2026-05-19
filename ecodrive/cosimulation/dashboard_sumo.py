@@ -60,6 +60,7 @@ BATTERY_MAXIMUM_KEYS = (
 BATTERY_TOTAL_CONSUMPTION_KEYS = (
     "device.battery.totalEnergyConsumed",
 )
+MMPEVEM_ACCELERATION_SANITY_LIMIT = 30.0
 
 
 class DashboardSumoSimulation(SumoSimulation):
@@ -69,7 +70,120 @@ class DashboardSumoSimulation(SumoSimulation):
         """Initialize the SUMO simulation with a lock shared by API and sync loop."""
         self.traci_lock = threading.RLock()
         self._autoware_battery_enforced_vehicles = set()
+        try:
+            self._dashboard_step_length = float(
+                args[1] if len(args) > 1 else kwargs.get("step_length", 0.05)
+            )
+        except (TypeError, ValueError):
+            self._dashboard_step_length = 0.05
+        self._dashboard_speed_overrides = set()
         super().__init__(*args, **kwargs)
+
+    @staticmethod
+    def _vehicle_emission_class(veh_id, type_id=None):
+        """Return the emission class for a live vehicle."""
+        resolved_type_id = type_id
+        if resolved_type_id is None:
+            try:
+                resolved_type_id = traci.vehicle.getTypeID(veh_id)
+            except traci.exceptions.TraCIException:
+                return ""
+
+        try:
+            return traci.vehicletype.getEmissionClass(resolved_type_id)
+        except traci.exceptions.TraCIException:
+            return ""
+
+    @staticmethod
+    def _is_mmpevem_vehicle(veh_id, type_id=None):
+        """Return whether the live vehicle uses the MMPEVEM model."""
+        return DashboardSumoSimulation._vehicle_emission_class(
+            veh_id,
+            type_id=type_id,
+        ).startswith(MMPEVEM_EMISSION_CLASS)
+
+    def _release_dashboard_speed_override(self, vehicle_id):
+        """Release a one-tick speed override installed for MMPEVEM stability."""
+        if vehicle_id not in self._dashboard_speed_overrides:
+            return
+
+        try:
+            traci.vehicle.setSpeed(vehicle_id, -1)
+        except traci.exceptions.TraCIException as error:
+            logging.warning(
+                "Could not release dashboard speed override for %s: %s",
+                vehicle_id,
+                error,
+            )
+        finally:
+            self._dashboard_speed_overrides.discard(vehicle_id)
+
+    def _sync_motion_estimate(self, vehicle_id, transform):
+        """Estimate the speed implied by the CARLA-to-SUMO pose update."""
+        try:
+            previous_x, previous_y = traci.vehicle.getPosition(vehicle_id)
+            previous_speed = traci.vehicle.getSpeed(vehicle_id)
+        except traci.exceptions.TraCIException:
+            return None, None
+
+        step_length = max(float(self._dashboard_step_length), 1e-6)
+        distance = math.hypot(
+            float(transform.location.x) - float(previous_x),
+            float(transform.location.y) - float(previous_y),
+        )
+        return distance / step_length, previous_speed
+
+    def _stabilize_mmpevem_speed_after_move(
+        self,
+        vehicle_id,
+        implied_speed,
+        previous_speed,
+    ):
+        """Avoid one-tick CARLA pose jumps poisoning MMPEVEM battery state."""
+        if not DashboardSumoSimulation._is_mmpevem_vehicle(vehicle_id):
+            return
+        if implied_speed is None or previous_speed is None:
+            return
+
+        if not math.isfinite(implied_speed) or not math.isfinite(previous_speed):
+            return
+        acceleration = (
+            implied_speed - previous_speed
+        ) / max(float(self._dashboard_step_length), 1e-6)
+        if abs(acceleration) <= MMPEVEM_ACCELERATION_SANITY_LIMIT:
+            return
+
+        try:
+            safe_speed = max(0.0, implied_speed)
+            try:
+                max_speed = traci.vehicle.getMaxSpeed(vehicle_id)
+                if math.isfinite(max_speed) and max_speed > 0.0:
+                    safe_speed = min(safe_speed, max_speed)
+            except (AttributeError, traci.exceptions.TraCIException):
+                pass
+
+            traci.vehicle.setPreviousSpeed(vehicle_id, safe_speed)
+            traci.vehicle.setSpeed(vehicle_id, safe_speed)
+            self._dashboard_speed_overrides.add(vehicle_id)
+        except (AttributeError, traci.exceptions.TraCIException) as error:
+            logging.warning(
+                "Could not stabilize MMPEVEM speed for %s after CARLA sync jump: %s",
+                vehicle_id,
+                error,
+            )
+
+    def synchronize_vehicle(self, vehicle_id, transform, signals=None):
+        """Synchronize CARLA-controlled vehicles while keeping MMPEVEM finite."""
+        self._release_dashboard_speed_override(vehicle_id)
+        implied_speed, previous_speed = self._sync_motion_estimate(vehicle_id, transform)
+        updated = super().synchronize_vehicle(vehicle_id, transform, signals)
+        if updated:
+            self._stabilize_mmpevem_speed_after_move(
+                vehicle_id,
+                implied_speed,
+                previous_speed,
+            )
+        return updated
 
     @staticmethod
     def _is_dashboard_battery_vehicle(veh_id, type_id=None):

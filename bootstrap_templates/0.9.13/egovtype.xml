@@ -1,10 +1,9 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <routes>
-  <vType id="ego_vehicle_type" vClass="evehicle" emissionClass="MMPEVEM" length="4.773" width="1.832" height="1.516" actionStepLength="1.0">
+  <vType id="ego_vehicle_type" vClass="evehicle" emissionClass="MMPEVEM" length="4.773" width="1.832" height="1.516" mass="1999.0" actionStepLength="1.0">
     <param key="has.battery.device" value="true" />
     <param key="carla.blueprint" value="vehicle.lexus.utlexus" />
     <param key="device.battery.capacity" value="75000.0" />
-    <param key="mass" value="1999.0" />
     <param key="wheelRadius" value="0.33" />
     <param key="internalMomentOfInertia" value="16.0" />
     <param key="rollDragCoefficient" value="0.01" />

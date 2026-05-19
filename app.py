@@ -595,6 +595,29 @@ def battery_output_path():
     return sumo_runtime_output_dir() / "battery.out.xml"
 
 
+def emission_output_path():
+    """Return the active SUMO emission output path."""
+    return sumo_runtime_output_dir() / "emission-output.xml"
+
+
+def current_plot_energy_model():
+    """Return the energy model configured for the current ego workflow."""
+    try:
+        if active_carla_version() == "0.9.13":
+            return (
+                st.session_state.get("autoware_ego_emission_model")
+                or read_autoware_ego_vtype_config().get("emission_model")
+                or ENERGY_EMISSION_CLASS
+            )
+        return (
+            st.session_state.get("ego_emission_model")
+            or read_ego_vtype_config().get("emission_model")
+            or ENERGY_EMISSION_CLASS
+        )
+    except Exception:
+        return ENERGY_EMISSION_CLASS
+
+
 def is_sumo_simulation_running():
     """Return whether the dashboard-launched SUMO/CARLA process is still active."""
     sync_process = st.session_state.get("traffic_process")
@@ -603,10 +626,18 @@ def is_sumo_simulation_running():
 
 def plot_output_available():
     """Return whether battery plots can be generated without reading a live SUMO file."""
-    path = battery_output_path()
-    if not path.exists() or path.stat().st_size == 0 or is_sumo_simulation_running():
+    if is_sumo_simulation_running():
         return False
-    return "<vehicle" in _read_text(path)
+
+    path = battery_output_path()
+    battery_ready = path.exists() and path.stat().st_size > 0 and "<vehicle" in _read_text(path)
+    emission_path = emission_output_path()
+    emission_ready = (
+        current_plot_energy_model() == MMPEVEM_EMISSION_CLASS
+        and emission_path.exists()
+        and emission_path.stat().st_size > 0
+    )
+    return battery_ready or emission_ready
 
 
 def render_plot_output():
@@ -618,9 +649,24 @@ def render_plot_output():
         return
 
     source_path = battery_output_path()
-    if not source_path.exists() or source_path.stat().st_size == 0 or "<vehicle" not in _read_text(source_path):
-        st.warning("No completed battery vehicle records are available yet.")
-        st.caption(f"Expected source: `{source_path}`")
+    emission_source_path = emission_output_path()
+    energy_model = current_plot_energy_model()
+    prefer_mmpevem = energy_model == MMPEVEM_EMISSION_CLASS
+    battery_ready = (
+        source_path.exists()
+        and source_path.stat().st_size > 0
+        and "<vehicle" in _read_text(source_path)
+    )
+    emission_ready = (
+        prefer_mmpevem
+        and emission_source_path.exists()
+        and emission_source_path.stat().st_size > 0
+    )
+    if not battery_ready and not emission_ready:
+        st.warning("No completed energy records are available yet.")
+        st.caption(f"Expected battery source: `{source_path}`")
+        if prefer_mmpevem:
+            st.caption(f"Expected MMPEVEM emission source: `{emission_source_path}`")
         return
 
     output_dir = sumo_runtime_output_dir() / "plots"
@@ -629,16 +675,22 @@ def render_plot_output():
             source_path,
             output_dir,
             prefix="battery",
+            emission_xml_file=emission_source_path,
+            prefer_mmpevem=prefer_mmpevem,
         )
     except Exception as exc:
         st.error(f"Could not generate battery plots: {exc}")
         st.caption(f"Battery source: `{source_path}`")
+        if prefer_mmpevem:
+            st.caption(f"MMPEVEM emission source: `{emission_source_path}`")
         return
 
     st.session_state.plot_output_paths = [str(path) for path in plot_paths]
     st.session_state.plot_output_source = str(source_path)
 
     st.caption(f"Battery source: `{source_path}`")
+    if prefer_mmpevem:
+        st.caption(f"MMPEVEM emission source: `{emission_source_path}`")
     st.caption(f"Plots saved in `{output_dir}`.")
 
     captions = [
@@ -2428,9 +2480,9 @@ def initialize_autoware_ego_config_state():
     st.session_state.autoware_ego_config_version = current_version
 
 
-def reset_vtype_model_state(prefix, emission_model):
+def reset_vtype_model_state(prefix, energy_model):
     """Reset emission-model-specific vehicle-type values in session state."""
-    attributes, parameters = ego_model_defaults(emission_model)
+    attributes, parameters = ego_model_defaults(energy_model)
 
     for key, value in attributes.items():
         st.session_state[f"{prefix}_attr_{key}"] = value
@@ -2531,6 +2583,7 @@ def render_ego_vehicle_config():
         emission_model = st.selectbox(
             "Energy model",
             options=[ENERGY_EMISSION_CLASS, MMPEVEM_EMISSION_CLASS],
+            value = ENERGY_EMISSION_CLASS,
             key="ego_emission_model",
         )
     with top_cols[2]:
@@ -2646,7 +2699,7 @@ def render_autoware_ego_vtype_editor():
             )
     with top_cols[-2]:
         emission_model = st.selectbox(
-            "Emission model",
+            "Energy model",
             options=[ENERGY_EMISSION_CLASS, MMPEVEM_EMISSION_CLASS],
             key="autoware_ego_emission_model",
         )
