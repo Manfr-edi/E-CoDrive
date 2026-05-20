@@ -19,6 +19,7 @@ import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import xml.etree.ElementTree as ET
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import urlopen
 
 import pandas as pd
@@ -33,7 +34,7 @@ from ecodrive.scenario import sumo_route_tools as route_tools
 
 
 CARLA_VERSION = "0.9.13"
-DEFAULT_AUTOWARE_STARTUP_WAIT = 10.0
+DEFAULT_AUTOWARE_STARTUP_WAIT = 0.0
 DEFAULT_AUTOWARE_SPEED_LIMIT_KMH = 50.0
 DEFAULT_EXTRA_SIMULATION_TIME = 300.0
 DEFAULT_DASHBOARD_API_URL = "http://127.0.0.1:5000"
@@ -57,6 +58,7 @@ class SimulationResult:
     ego: Dict[str, Any]
     artifacts: Dict[str, str]
     output_paths: Dict[str, str]
+    csv_paths: Dict[str, str]
     plot_paths: List[str]
     energy_data: pd.DataFrame
     energy_records: List[Dict[str, Any]]
@@ -100,7 +102,7 @@ class _ProgressLogger:
 def simulate(
     *,
     town: str,
-    traffic_congestion_edge: Optional[str],
+    traffic_congestion_edge: Optional[str] = None,
     traffic_source_edge: Optional[str] = None,
     traffic_destination_edge: Optional[str] = None,
     traffic_vehicle_count: int = 10,
@@ -108,6 +110,8 @@ def simulate(
     traffic_stop_spawn_time: float = 120.0,
     traffic_vehicle_type: Optional[str] = None,
     traffic_random_vehicle_type: bool = False,
+    traffic_generation_mode: str = "congestion",
+    ego_starting_delay: float = 0.0,
     ego_source_edge: str,
     ego_destination_edge: str,
     ego_energy_model: str = route_tools.ENERGY_EMISSION_CLASS,
@@ -121,13 +125,15 @@ def simulate(
     traffic_spawn_pattern: str = "Equidistant",
     autoware_startup_wait: float = DEFAULT_AUTOWARE_STARTUP_WAIT,
     autoware_speed_limit_kmh: Optional[float] = DEFAULT_AUTOWARE_SPEED_LIMIT_KMH,
-    carla_timeout: float = 180.0,
-    autoware_spawn_timeout: float = 60.0,
+    carla_timeout: float = 300.0,
+    autoware_spawn_timeout: float = 300.0,
     autoware_carla_rpc_timeout: Optional[float] = None,
-    autoware_sumo_mirror_timeout: float = 60.0,
-    autoware_route_timeout: float = 75.0,
+    autoware_sumo_mirror_timeout: float = 120.0,
+    autoware_route_timeout: float = 120.0,
     wall_timeout: Optional[float] = None,
     stop_on_ego_arrival: bool = True,
+    completion_grace_period: float = 3.0,
+    destination_edge_end_tolerance: float = 22.0,
     generate_plots: bool = True,
     cleanup_existing: bool = True,
     carla_extra_args: Optional[Sequence[str]] = None,
@@ -147,13 +153,23 @@ def simulate(
         if progress_log_file is not None
         else output_dir / "automated_simulation_progress.log"
     )
-    progress_log.log("start", f"simulate(town={town}, carla_version={CARLA_VERSION})")
+    generation_mode = _normalize_traffic_generation_mode(traffic_generation_mode)
+    progress_log.log(
+        "start",
+        (
+            f"simulate(town={town}, carla_version={CARLA_VERSION}, "
+            f"traffic_generation_mode={generation_mode})"
+        ),
+    )
 
     _validate_town_and_edges(
         town,
-        traffic_congestion_edge,
-        traffic_source_edge,
-        traffic_destination_edge,
+        *_traffic_edges_to_validate(
+            generation_mode,
+            traffic_congestion_edge,
+            traffic_source_edge,
+            traffic_destination_edge,
+        ),
         ego_source_edge,
         ego_destination_edge,
     )
@@ -215,16 +231,17 @@ def simulate(
         traffic_stop_spawn_time,
         simulation_end,
     )
-    scenario = route_tools.generate_congestion_scenario(
-        map_name=town,
-        target_edge=traffic_congestion_edge,
+    scenario, traffic_metadata = _generate_traffic_scenario(
+        generation_mode=generation_mode,
+        town=town,
+        congestion_edge=traffic_congestion_edge,
+        source_edge=traffic_source_edge,
         destination_edge=traffic_destination_edge,
         vehicle_count=int(traffic_vehicle_count),
-        begin=float(traffic_spawn_time),
-        end=float(traffic_stop_spawn_time),
+        spawn_time=float(traffic_spawn_time),
+        stop_spawn_time=float(traffic_stop_spawn_time),
         simulation_end=resolved_simulation_end,
         spawn_pattern=traffic_spawn_pattern,
-        source_edge=traffic_source_edge,
         seed=int(traffic_seed),
         vehicle_type=selected_vehicle_type,
         random_vehicle_type=random_vehicle_type,
@@ -233,8 +250,9 @@ def simulate(
     progress_log.log(
         "scenario",
         (
-            f"Generated route scenario {scenario.generated_count}/"
-            f"{scenario.requested_count} vehicles; sumocfg={scenario.sumocfg_file}."
+            f"Generated {generation_mode} route scenario {scenario.generated_count}/"
+            f"{scenario.requested_count} vehicles; mode={scenario.mode}; "
+            f"sumocfg={scenario.sumocfg_file}."
         ),
     )
 
@@ -308,6 +326,7 @@ def simulate(
             start_edge=ego_source_edge,
             goal_edge=ego_destination_edge,
             speed_limit_kmh=autoware_speed_limit_kmh,
+            ego_vehicle_delay=ego_starting_delay,
             mirror_timeout=float(autoware_sumo_mirror_timeout),
             route_timeout=float(autoware_route_timeout),
             progress_log=progress_log,
@@ -320,6 +339,11 @@ def simulate(
             simulation_end=resolved_simulation_end,
             wall_timeout=wall_timeout,
             stop_on_ego_arrival=stop_on_ego_arrival,
+            critical_battery_threshold=float(ego_critical_battery_threshold),
+            ego_vehicle_id=_completion_ego_vehicle_id(autoware_route_start),
+            destination_edge=ego_destination_edge,
+            destination_edge_end_tolerance=float(destination_edge_end_tolerance),
+            completion_grace_period=float(completion_grace_period),
             progress_log=progress_log,
         )
         progress_log.log("run", f"Completion reason: {completion_reason}.")
@@ -346,6 +370,13 @@ def simulate(
         fallback_vtypes=(route_tools.AUTOWARE_EGO_VTYPE,),
     )
     summary_records = _read_summary_records(Path(output_paths["summary"]))
+    csv_paths = _export_output_csvs(
+        output_paths,
+        energy_data=energy_data,
+        tripinfos=tripinfos,
+        summary_records=summary_records,
+    )
+    progress_log.log("outputs", f"Saved {len(csv_paths)} CSV output files.")
     plot_paths = _generate_plots(
         output_paths,
         energy_model,
@@ -357,9 +388,10 @@ def simulate(
         town=town,
         carla_version=CARLA_VERSION,
         traffic={
-            "source_edge": traffic_source_edge,
-            "destination_edge": traffic_destination_edge,
-            "congestion_edge": traffic_congestion_edge,
+            **traffic_metadata,
+            "requested_source_edge": traffic_source_edge,
+            "requested_destination_edge": traffic_destination_edge,
+            "requested_congestion_edge": traffic_congestion_edge,
             "vehicle_count": int(traffic_vehicle_count),
             "generated_count": scenario.generated_count,
             "target_count": scenario.target_count,
@@ -367,6 +399,7 @@ def simulate(
             "stop_spawn_time": float(traffic_stop_spawn_time),
             "vehicle_type": "random" if random_vehicle_type else selected_vehicle_type,
             "seed": int(traffic_seed),
+            "scenario_mode": scenario.mode,
         },
         ego={
             "source_edge": ego_source_edge,
@@ -387,6 +420,7 @@ def simulate(
             "sumocfg_file": str(scenario.sumocfg_file),
         },
         output_paths=output_paths,
+        csv_paths=csv_paths,
         plot_paths=plot_paths,
         energy_data=energy_data,
         energy_records=energy_data.to_dict(orient="records"),
@@ -411,6 +445,7 @@ def start_sumo_and_publish_autoware_route(
     start_edge: str,
     goal_edge: str,
     speed_limit_kmh: Optional[float] = DEFAULT_AUTOWARE_SPEED_LIMIT_KMH,
+    ego_vehicle_delay: float = 10.0,
     mirror_timeout: float = 60.0,
     route_timeout: float = 75.0,
     dashboard_api_url: str = DEFAULT_DASHBOARD_API_URL,
@@ -433,6 +468,10 @@ def start_sumo_and_publish_autoware_route(
             f"Autoware ego mirror visible in SUMO: {mirror_vehicle}.",
         )
         progress_log.log("autoware", "Publishing Autoware route after SUMO run started.")
+    if ego_vehicle_delay > 0:
+        if progress_log is not None:
+            progress_log.log("sync", "Waiting configured delay for ego vehicle to start.")
+        time.sleep(ego_vehicle_delay)
     route_publication = route_tools.publish_autoware_route_in_container(
         town,
         container_name=container_name,
@@ -448,6 +487,12 @@ def start_sumo_and_publish_autoware_route(
         "mirror_vehicle": mirror_vehicle,
         "route_publication": route_publication,
     }
+
+
+def _completion_ego_vehicle_id(autoware_route_start: Optional[Dict[str, Any]]) -> Optional[str]:
+    mirror_vehicle = (autoware_route_start or {}).get("mirror_vehicle") or {}
+    vehicle_id = mirror_vehicle.get("id")
+    return str(vehicle_id) if vehicle_id not in (None, "") else None
 
 
 def _activate_carla() -> None:
@@ -542,6 +587,115 @@ def _as_random_vehicle_type(
     return bool(random_vehicle_type) or str(vehicle_type or "").strip().lower() == "random"
 
 
+def _normalize_traffic_generation_mode(mode: str) -> str:
+    value = str(mode or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if value in {"", "congestion", "congestion_edge", "manual", "via_edge"}:
+        return "congestion"
+    if value in {
+        "random",
+        "random_congestion",
+        "congestion_random",
+        "random_edge",
+        "random_via_edge",
+        "target_random",
+        "target_edge_random",
+    }:
+        return "random_congestion"
+    if value in {
+        "random_traffic",
+        "dashboard_random",
+        "random_trips",
+        "randomtrips",
+        "map_random",
+        "whole_map_random",
+    }:
+        return "random_traffic"
+    raise ValueError(
+        "traffic_generation_mode must be one of: 'congestion', "
+        "'random_congestion'/'random', or 'random_traffic'."
+    )
+
+
+def _traffic_edges_to_validate(
+    generation_mode: str,
+    congestion_edge: Optional[str],
+    source_edge: Optional[str],
+    destination_edge: Optional[str],
+) -> Tuple[Optional[str], ...]:
+    if generation_mode == "random_traffic":
+        return ()
+    if generation_mode == "random_congestion":
+        return (congestion_edge,)
+    return (congestion_edge, source_edge, destination_edge)
+
+
+def _generate_traffic_scenario(
+    *,
+    generation_mode: str,
+    town: str,
+    congestion_edge: Optional[str],
+    source_edge: Optional[str],
+    destination_edge: Optional[str],
+    vehicle_count: int,
+    spawn_time: float,
+    stop_spawn_time: float,
+    simulation_end: float,
+    spawn_pattern: str,
+    seed: int,
+    vehicle_type: str,
+    random_vehicle_type: bool,
+    vehicle_types: Sequence[str],
+) -> Tuple[Any, Dict[str, Any]]:
+    if generation_mode == "random_traffic":
+        scenario = route_tools.generate_random_trips_scenario(
+            map_name=town,
+            vehicle_count=vehicle_count,
+            begin=spawn_time,
+            end=stop_spawn_time,
+            simulation_end=simulation_end,
+            seed=seed,
+            vehicle_type=vehicle_type,
+            random_vehicle_type=random_vehicle_type,
+            vehicle_types=vehicle_types,
+        )
+        return scenario, {
+            "generation_mode": generation_mode,
+            "source_edge": None,
+            "destination_edge": None,
+            "congestion_edge": None,
+            "spawn_pattern": None,
+        }
+
+    effective_source_edge = source_edge
+    effective_destination_edge = destination_edge
+    if generation_mode == "random_congestion":
+        effective_source_edge = None
+        effective_destination_edge = None
+
+    scenario = route_tools.generate_congestion_scenario(
+        map_name=town,
+        target_edge=congestion_edge,
+        destination_edge=effective_destination_edge,
+        vehicle_count=vehicle_count,
+        begin=spawn_time,
+        end=stop_spawn_time,
+        simulation_end=simulation_end,
+        spawn_pattern=spawn_pattern,
+        source_edge=effective_source_edge,
+        seed=seed,
+        vehicle_type=vehicle_type,
+        random_vehicle_type=random_vehicle_type,
+        vehicle_types=vehicle_types,
+    )
+    return scenario, {
+        "generation_mode": generation_mode,
+        "source_edge": effective_source_edge,
+        "destination_edge": effective_destination_edge,
+        "congestion_edge": congestion_edge,
+        "spawn_pattern": spawn_pattern,
+    }
+
+
 def _simulation_end(stop_spawn_time: float, simulation_end: Optional[float]) -> float:
     if simulation_end is not None:
         return max(float(stop_spawn_time), float(simulation_end))
@@ -569,6 +723,11 @@ def _resolve_autoware_carla_rpc_timeout(
             60.0,
         ),
     )
+
+
+def _resolve_carla_rpc_timeout(process_timeout: float) -> float:
+    """Resolve a per-RPC CARLA guard used by readiness probes."""
+    return max(10.0, min(float(process_timeout), 60.0))
 
 
 def _cleanup_existing_runtime(
@@ -765,16 +924,16 @@ def _start_carla(
             f"{route_tools.DEFAULT_CARLA_HOST}:{route_tools.DEFAULT_CARLA_PORT}."
         )
 
-    log_file = route_tools.OUTPUT_DIR / "carla_server_headless.log"
+    log_file = route_tools.OUTPUT_DIR / "carla_server_automated.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    args = ["./CarlaUE4.sh", "-RenderOffScreen", "-quality-level=Low", "-nosound"]
+    args = ["./CarlaUE4.sh", "-RenderOffScreen"]
     if extra_args:
         args.extend(str(item) for item in extra_args)
     if progress_log is not None:
-        progress_log.log("carla", f"Launching CARLA headless: {' '.join(args)}")
+        progress_log.log("carla", f"Launching CARLA: {' '.join(args)}")
 
     log_handle = log_file.open("a", encoding="utf-8")
-    log_handle.write(f"\n\n=== CarlaUE4 headless {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+    log_handle.write(f"\n\n=== CarlaUE4 automated {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
     log_handle.write(" ".join(args) + "\n")
     log_handle.flush()
 
@@ -799,14 +958,103 @@ def _start_carla(
             town,
             log_file=route_tools.OUTPUT_DIR / "carla_map_headless.log",
         )
+        world_ready = _wait_for_carla_world_ready(
+            town,
+            timeout=float(timeout),
+            rpc_timeout=_resolve_carla_rpc_timeout(timeout),
+        )
         if progress_log is not None:
-            progress_log.log("carla", f"CARLA map loaded: {town}.")
+            progress_log.log("carla", f"CARLA world ready: {world_ready}.")
     except Exception:
         if progress_log is not None:
             progress_log.log("carla", "CARLA startup failed; stopping process.")
         _stop_process(process, interrupt=False)
         raise
     return process
+
+
+def _wait_for_carla_world_ready(
+    town: str,
+    *,
+    timeout: float,
+    rpc_timeout: float,
+) -> Dict[str, Any]:
+    """Wait until CARLA answers RPC calls and exposes the requested world."""
+    script = """
+import json
+import os
+import sys
+import time
+
+import carla
+
+
+host = os.environ.get("ECODRIVE_CARLA_HOST", "127.0.0.1")
+port = int(os.environ.get("ECODRIVE_CARLA_PORT", "2000"))
+town = os.environ["ECODRIVE_CARLA_TOWN"]
+timeout = float(os.environ.get("ECODRIVE_CARLA_READY_TIMEOUT", "300"))
+rpc_timeout = float(os.environ.get("ECODRIVE_CARLA_RPC_TIMEOUT", "30"))
+
+client = carla.Client(host, port)
+client.set_timeout(rpc_timeout)
+deadline = time.time() + timeout
+last_error = None
+
+while time.time() < deadline:
+    try:
+        world = client.get_world()
+        carla_map = world.get_map().name
+        snapshot = world.get_snapshot()
+        if town in carla_map:
+            print(json.dumps({
+                "map": carla_map,
+                "frame": snapshot.frame,
+                "elapsed_seconds": snapshot.timestamp.elapsed_seconds,
+            }))
+            sys.exit(0)
+        last_error = f"loaded map is {carla_map!r}, expected {town!r}"
+    except RuntimeError as exc:
+        last_error = str(exc)
+    time.sleep(0.5)
+
+raise RuntimeError(
+    f"Timed out waiting for CARLA world {town!r} after {timeout:.1f}s."
+    + (f" Last CARLA RPC error: {last_error}" if last_error else "")
+)
+""".strip()
+    env = route_tools._build_env()  # pylint: disable=protected-access
+    env.update(
+        {
+            "ECODRIVE_CARLA_HOST": route_tools.DEFAULT_CARLA_HOST,
+            "ECODRIVE_CARLA_PORT": str(route_tools.DEFAULT_CARLA_PORT),
+            "ECODRIVE_CARLA_TOWN": str(town),
+            "ECODRIVE_CARLA_READY_TIMEOUT": str(float(timeout)),
+            "ECODRIVE_CARLA_RPC_TIMEOUT": str(float(rpc_timeout)),
+        }
+    )
+    process = subprocess.run(
+        [str(route_tools.resolve_carla_python_executable()), "-c", script],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=max(float(timeout) + float(rpc_timeout) + 10.0, 10.0),
+        check=False,
+    )
+    if process.returncode != 0:
+        details = " | ".join(
+            part.strip()
+            for part in (process.stderr, process.stdout)
+            if part and part.strip()
+        )
+        raise RuntimeError(
+            "CARLA did not become ready after map load: "
+            f"{details or 'unknown error'}"
+        )
+
+    try:
+        return json.loads(process.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError) as exc:
+        raise RuntimeError("CARLA readiness check returned an invalid payload.") from exc
 
 
 def _start_automated_synchronization(
@@ -824,7 +1072,7 @@ def _start_automated_synchronization(
     start_gate_file = output_dir / "run_automated_synchronization.start"
     ready_file = output_dir / "run_automated_synchronization.ready"
     sync_log_file = output_dir / "automated_run_synchronization.log"
-    carla_log_file = output_dir / "carla_server_headless.log"
+    carla_log_file = output_dir / "carla_server_automated.log"
 
     _safe_unlink(start_gate_file)
     _safe_unlink(ready_file)
@@ -1093,6 +1341,106 @@ raise RuntimeError(
     return payload
 
 
+def _read_vehicle_state(
+    dashboard_api_url: str,
+    vehicle_id: str,
+    *,
+    timeout: float,
+) -> Optional[Dict[str, Any]]:
+    query = urlencode({"veh_id": str(vehicle_id)})
+    try:
+        payload = _read_json_url(
+            f"{dashboard_api_url.rstrip('/')}/state?{query}",
+            timeout=timeout,
+        )
+    except HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+    if not payload or payload.get("error"):
+        return None
+    return payload
+
+
+def _read_autoware_vehicle_from_api(
+    dashboard_api_url: str,
+    *,
+    timeout: float,
+) -> Optional[Dict[str, Any]]:
+    payload = _read_json_url(
+        f"{dashboard_api_url.rstrip('/')}/vehicles",
+        timeout=timeout,
+    )
+    for vehicle in payload.get("vehicles", []):
+        if _is_autoware_sumo_vehicle(vehicle):
+            return vehicle
+    return None
+
+
+def _normalize_sumo_edge_id(edge_id: Any) -> str:
+    value = str(edge_id or "").strip()
+    if re.search(r"_\d+$", value):
+        return re.sub(r"_\d+$", "", value)
+    return value
+
+
+def _same_sumo_edge(left: Any, right: Any) -> bool:
+    return bool(left and right) and _normalize_sumo_edge_id(left) == _normalize_sumo_edge_id(right)
+
+
+def _ego_has_arrived_and_stopped(
+    state: Dict[str, Any],
+    *,
+    destination_edge_completed: bool,
+    destination_edge: Optional[str],
+) -> bool:
+    speed = _finite_float(state.get("speed"))
+    distance_remaining = _finite_float(state.get("distance_remaining_m"))
+    if speed is None or speed > 0.15:
+        return False
+    if destination_edge_completed:
+        return True
+    if destination_edge:
+        return False
+    # Fallback for dashboard-spawned vehicles whose SUMO route is known.
+    if distance_remaining is None:
+        return False
+    return distance_remaining <= 2.0
+
+
+def _ego_completed_destination_edge(
+    state: Dict[str, Any],
+    *,
+    destination_edge: Optional[str],
+    end_tolerance: float,
+) -> bool:
+    if not destination_edge or not _same_sumo_edge(state.get("edge"), destination_edge):
+        return False
+
+    lane_position = _finite_float(state.get("lane_position_m"))
+    edge_length = _finite_float(state.get("edge_length_m"))
+    lane_length = _finite_float(state.get("lane_length_m"))
+    target_length = edge_length or lane_length
+    if lane_position is None or target_length is None or target_length <= 0:
+        return False
+
+    return lane_position >= max(0.0, target_length - max(float(end_tolerance), 0.0))
+
+
+def _ego_battery_below_threshold(
+    state: Dict[str, Any],
+    *,
+    fallback_threshold: float,
+) -> bool:
+    battery = _finite_float(state.get("battery"))
+    threshold = _finite_float(state.get("battery_failure_threshold"))
+    if threshold is None or threshold <= 0:
+        threshold = float(fallback_threshold)
+    if threshold <= 0 or battery is None:
+        return False
+    return battery <= threshold
+
+
 def _wait_for_completion(
     process: subprocess.Popen,
     output_dir: Path,
@@ -1100,6 +1448,12 @@ def _wait_for_completion(
     simulation_end: float,
     wall_timeout: Optional[float],
     stop_on_ego_arrival: bool,
+    critical_battery_threshold: float,
+    ego_vehicle_id: Optional[str],
+    destination_edge: Optional[str],
+    destination_edge_end_tolerance: float,
+    completion_grace_period: float,
+    dashboard_api_url: str = DEFAULT_DASHBOARD_API_URL,
     progress_log: Optional[_ProgressLogger] = None,
 ) -> str:
     timeout = (
@@ -1109,6 +1463,12 @@ def _wait_for_completion(
     )
     deadline = time.time() + timeout
     tripinfo_path = output_dir / OUTPUT_XML_FILES["tripinfo"]
+    completion_detected_at = None
+    completion_reason = None
+    resolved_ego_vehicle_id = ego_vehicle_id
+    last_api_error = None
+    destination_edge_completed = False
+    last_state_log_at = 0.0
 
     while time.time() < deadline:
         if process.poll() is not None:
@@ -1118,6 +1478,89 @@ def _wait_for_completion(
                     f"Synchronization process exited with code {process.returncode}.",
                 )
             return "sync_process_finished"
+
+        state = None
+        try:
+            if resolved_ego_vehicle_id:
+                state = _read_vehicle_state(
+                    dashboard_api_url,
+                    resolved_ego_vehicle_id,
+                    timeout=2.0,
+                )
+            if state is None:
+                mirror_vehicle = _read_autoware_vehicle_from_api(
+                    dashboard_api_url,
+                    timeout=2.0,
+                )
+                if mirror_vehicle is not None:
+                    resolved_ego_vehicle_id = str(mirror_vehicle.get("id") or "")
+                    if resolved_ego_vehicle_id:
+                        state = _read_vehicle_state(
+                            dashboard_api_url,
+                            resolved_ego_vehicle_id,
+                            timeout=2.0,
+                        )
+                    if state is None:
+                        state = mirror_vehicle
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+            last_api_error = exc
+
+        if state is not None and completion_detected_at is None:
+            if _ego_completed_destination_edge(
+                state,
+                destination_edge=destination_edge,
+                end_tolerance=float(destination_edge_end_tolerance),
+            ):
+                destination_edge_completed = True
+
+            if progress_log is not None and time.time() - last_state_log_at >= 10.0:
+                last_state_log_at = time.time()
+                progress_log.log(
+                    "run",
+                    (
+                        "Live ego state: "
+                        f"id={resolved_ego_vehicle_id}, edge={state.get('edge')}, "
+                        f"dest={destination_edge}, dest_completed={destination_edge_completed}, "
+                        f"speed={state.get('speed')}, "
+                        f"lane_position={state.get('lane_position_m')}, "
+                        f"edge_length={state.get('edge_length_m')}, "
+                        f"distance_remaining={state.get('distance_remaining_m')}, "
+                        f"battery={state.get('battery')}, "
+                        f"threshold={state.get('battery_failure_threshold')}."
+                    ),
+                )
+
+            if stop_on_ego_arrival and _ego_has_arrived_and_stopped(
+                state,
+                destination_edge_completed=destination_edge_completed,
+                destination_edge=destination_edge,
+            ):
+                completion_reason = "ego_arrived_and_stopped"
+            elif _ego_battery_below_threshold(
+                state,
+                fallback_threshold=float(critical_battery_threshold),
+            ):
+                completion_reason = "critical_battery_threshold"
+
+            if completion_reason is not None:
+                completion_detected_at = time.time()
+                if progress_log is not None:
+                    progress_log.log(
+                        "run",
+                        (
+                            f"Stop condition detected: {completion_reason}; "
+                            f"state={state}. Waiting {float(completion_grace_period):.1f}s "
+                            "before stopping synchronization."
+                        ),
+                    )
+
+        if completion_detected_at is not None:
+            if time.time() - completion_detected_at >= max(float(completion_grace_period), 0.0):
+                _stop_process(process, interrupt=True)
+                return str(completion_reason)
+            time.sleep(0.2)
+            continue
+
         if stop_on_ego_arrival:
             tripinfo = _select_tripinfo(
                 _read_tripinfos(tripinfo_path),
@@ -1127,12 +1570,14 @@ def _wait_for_completion(
                 if progress_log is not None:
                     progress_log.log("run", f"Ego tripinfo detected: {tripinfo}.")
                 _stop_process(process, interrupt=True)
-                return "ego_arrived"
+                return "ego_arrived_tripinfo"
         time.sleep(1.0)
 
     _stop_process(process, interrupt=True)
+    detail = f" Last dashboard API error: {last_api_error}" if last_api_error else ""
     raise TimeoutError(
         f"Timed out waiting for the automated co-simulation after {timeout:.1f}s."
+        f"{detail}"
     )
 
 
@@ -1188,7 +1633,9 @@ def _stop_autoware_processes(container_name: str) -> None:
 
     patterns = [
         "roslaunch autoware_mini start_carla.launch",
+        "roslaunch autoware_mini start_carla_headless.launch",
         "start_carla.launch",
+        "start_carla_headless.launch",
         "carla_ros_bridge",
         "carla_waypoints_publisher",
         "lanelet2_global_planner",
@@ -1275,6 +1722,59 @@ def _generate_plots(
     return [str(path) for path in paths]
 
 
+def _export_output_csvs(
+    output_paths: Dict[str, str],
+    *,
+    energy_data: pd.DataFrame,
+    tripinfos: Sequence[Dict[str, str]],
+    summary_records: Sequence[Dict[str, str]],
+) -> Dict[str, str]:
+    csv_dir = Path(output_paths["battery"]).parent / "csv"
+    csv_dir.mkdir(parents=True, exist_ok=True)
+
+    csv_paths = {
+        "energy": csv_dir / "energy.csv",
+        "battery": csv_dir / "battery.csv",
+        "emission": csv_dir / "emission.csv",
+        "tripinfo": csv_dir / "tripinfos.csv",
+        "summary": csv_dir / "summary.csv",
+        "vehroute": csv_dir / "vehroute.csv",
+        "edgedata": csv_dir / "edgedata.csv",
+    }
+
+    _write_dataframe_csv(energy_data, csv_paths["energy"])
+    _write_records_csv(
+        _read_timestep_vehicle_records(Path(output_paths["battery"])),
+        csv_paths["battery"],
+    )
+    _write_records_csv(
+        _read_timestep_vehicle_records(Path(output_paths["emission"])),
+        csv_paths["emission"],
+    )
+    _write_records_csv(tripinfos, csv_paths["tripinfo"])
+    _write_records_csv(summary_records, csv_paths["summary"])
+    _write_records_csv(
+        _read_vehroute_records(Path(output_paths["vehroute"])),
+        csv_paths["vehroute"],
+    )
+    _write_records_csv(
+        _read_edgedata_records(Path(output_paths["edgedata"])),
+        csv_paths["edgedata"],
+    )
+
+    return {key: str(path) for key, path in csv_paths.items()}
+
+
+def _write_dataframe_csv(data: pd.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data.to_csv(path, index=False)
+
+
+def _write_records_csv(records: Sequence[Dict[str, Any]], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(list(records)).to_csv(path, index=False)
+
+
 def _read_text(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8", errors="ignore")
@@ -1311,6 +1811,60 @@ def _read_tripinfos(path: Path) -> List[Dict[str, str]]:
                 data[f"emissions_{key}"] = value
         tripinfos.append(data)
     return tripinfos
+
+
+def _read_timestep_vehicle_records(path: Path) -> List[Dict[str, str]]:
+    records = []
+    for timestep in _iter_xml_fragments(path, "timestep"):
+        timestep_attrs = _prefixed_attributes(timestep.attrib, "timestep")
+        for vehicle in timestep.findall("vehicle"):
+            data = dict(timestep_attrs)
+            data.update(vehicle.attrib)
+            records.append(data)
+    return records
+
+
+def _read_vehroute_records(path: Path) -> List[Dict[str, str]]:
+    records = []
+    for vehicle in _iter_xml_fragments(path, "vehicle"):
+        data = dict(vehicle.attrib)
+        routes = vehicle.findall(".//route")
+        data["route_count"] = str(len(routes))
+        for index, route in enumerate(routes):
+            prefix = "route" if index == 0 else f"route_{index}"
+            data.update(_prefixed_attributes(route.attrib, prefix))
+        records.append(data)
+    return records
+
+
+def _read_edgedata_records(path: Path) -> List[Dict[str, str]]:
+    records = []
+    for interval in _iter_xml_fragments(path, "interval"):
+        interval_attrs = _prefixed_attributes(interval.attrib, "interval")
+        for edge in interval.findall("edge"):
+            edge_attrs = dict(edge.attrib)
+            lane_elements = edge.findall("lane")
+            if not lane_elements:
+                data = dict(interval_attrs)
+                data.update(edge_attrs)
+                records.append(data)
+                continue
+
+            data = dict(interval_attrs)
+            data.update(edge_attrs)
+            data["record_type"] = "edge"
+            records.append(data)
+            for lane in lane_elements:
+                lane_data = dict(interval_attrs)
+                lane_data.update(_prefixed_attributes(edge_attrs, "edge"))
+                lane_data.update(lane.attrib)
+                lane_data["record_type"] = "lane"
+                records.append(lane_data)
+    return records
+
+
+def _prefixed_attributes(attributes: Dict[str, str], prefix: str) -> Dict[str, str]:
+    return {f"{prefix}_{key}": value for key, value in attributes.items()}
 
 
 def _select_tripinfo(

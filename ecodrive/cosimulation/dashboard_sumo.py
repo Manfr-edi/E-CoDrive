@@ -1014,6 +1014,11 @@ class DashboardSumoSimulation(SumoSimulation):
                 return None
 
             type_id = traci.vehicle.getTypeID(resolved_vehicle_id)
+            current_edge = None
+            current_lane = None
+            lane_position_m = None
+            lane_length_m = None
+            edge_length_m = None
             route_final_edge = None
             distance_travelled_m = None
             distance_remaining_m = None
@@ -1029,6 +1034,33 @@ class DashboardSumoSimulation(SumoSimulation):
                 distance_travelled_m = float(traci.vehicle.getDistance(resolved_vehicle_id))
             except (TypeError, ValueError, traci.exceptions.TraCIException):
                 pass
+
+            try:
+                current_edge = traci.vehicle.getRoadID(resolved_vehicle_id)
+            except traci.exceptions.TraCIException:
+                current_edge = None
+
+            try:
+                current_lane = traci.vehicle.getLaneID(resolved_vehicle_id)
+            except traci.exceptions.TraCIException:
+                current_lane = None
+
+            try:
+                lane_position_m = float(traci.vehicle.getLanePosition(resolved_vehicle_id))
+            except (TypeError, ValueError, traci.exceptions.TraCIException):
+                lane_position_m = None
+
+            if current_lane:
+                try:
+                    lane_length_m = float(traci.lane.getLength(current_lane))
+                except (TypeError, ValueError, traci.exceptions.TraCIException):
+                    lane_length_m = None
+
+            if current_edge and not str(current_edge).startswith(":"):
+                try:
+                    edge_length_m = float(self.net.getEdge(current_edge).getLength())
+                except (AttributeError, TypeError, ValueError, KeyError, traci.exceptions.TraCIException):
+                    edge_length_m = None
 
             try:
                 route = traci.vehicle.getRoute(resolved_vehicle_id)
@@ -1077,7 +1109,11 @@ class DashboardSumoSimulation(SumoSimulation):
                 "vehicle_id": str(resolved_vehicle_id),
                 "type_id": type_id,
                 "speed": traci.vehicle.getSpeed(resolved_vehicle_id),
-                "edge": traci.vehicle.getRoadID(resolved_vehicle_id),
+                "edge": current_edge,
+                "lane": current_lane,
+                "lane_position_m": lane_position_m,
+                "lane_length_m": lane_length_m,
+                "edge_length_m": edge_length_m,
                 "sim_time": traci.simulation.getTime(),
                 "route_final_edge": route_final_edge,
                 "distance_travelled_m": distance_travelled_m,
