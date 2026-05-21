@@ -1029,6 +1029,7 @@ class DashboardSumoSimulation(SumoSimulation):
                 resolved_vehicle_id,
                 type_id=type_id,
             )
+            battery_stop_applied = False
 
             try:
                 distance_travelled_m = float(traci.vehicle.getDistance(resolved_vehicle_id))
@@ -1086,6 +1087,7 @@ class DashboardSumoSimulation(SumoSimulation):
                     distance_remaining_m = None
 
             if has_battery_device:
+                battery_stop_applied = self._battery_stop_applied(resolved_vehicle_id)
                 total_energy_consumed_wh = self._vehicle_parameter_float(
                     resolved_vehicle_id,
                     BATTERY_TOTAL_CONSUMPTION_KEYS,
@@ -1122,6 +1124,7 @@ class DashboardSumoSimulation(SumoSimulation):
                 "total_energy_consumed_wh": total_energy_consumed_wh,
                 "has_battery_device": has_battery_device,
                 "battery_failure_threshold": battery_failure_threshold,
+                "battery_stop_applied": battery_stop_applied,
             }
 
     def tick(self):

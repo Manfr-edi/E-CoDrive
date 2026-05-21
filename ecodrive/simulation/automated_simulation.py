@@ -101,6 +101,7 @@ class _ProgressLogger:
 
 def simulate(
     *,
+    headless: bool = True,
     town: str,
     traffic_congestion_edge: Optional[str] = None,
     traffic_source_edge: Optional[str] = None,
@@ -134,6 +135,8 @@ def simulate(
     stop_on_ego_arrival: bool = True,
     completion_grace_period: float = 3.0,
     destination_edge_end_tolerance: float = 22.0,
+    destination_stall_timeout: Optional[float] = 45.0,
+    runtime_retries: int = 2,
     generate_plots: bool = True,
     cleanup_existing: bool = True,
     carla_extra_args: Optional[Sequence[str]] = None,
@@ -256,107 +259,141 @@ def simulate(
         ),
     )
 
-    carla_process = None
-    sync_launch = None
-    autoware_container = None
     autoware_spawn = None
     autoware_route_start = None
     completion_reason = "unknown"
+    max_runtime_attempts = max(1, int(runtime_retries) + 1)
 
-    try:
-        carla_process = _start_carla(
-            town,
-            timeout=float(carla_timeout),
-            extra_args=carla_extra_args,
-            progress_log=progress_log,
-        )
-        sync_launch = _start_automated_synchronization(
-            scenario.sumocfg_file,
-            carla_process=carla_process,
-            carla_timeout=float(carla_timeout),
-            sumo_gui=False,
-            output_dir=output_dir,
-            progress_log=progress_log,
-        )
-        _wait_for_sync_ready(sync_launch, timeout=float(carla_timeout))
-        progress_log.log(
-            "sync",
-            (
-                "SUMO/TraCI is initialized and gated; simulation time has not "
-                f"advanced. ready_file={getattr(sync_launch, 'ready_file', None)}"
-            ),
-        )
+    for runtime_attempt in range(max_runtime_attempts):
+        carla_process = None
+        sync_launch = None
+        autoware_container = None
+        runtime_succeeded = False
 
-        progress_log.log("autoware", "Launching Autoware CARLA stack.")
-        autoware_launch = route_tools.launch_autoware_carla_in_container(
-            town,
-            spawn_edge=ego_source_edge,
-            start_edge=ego_source_edge,
-            goal_edge=ego_destination_edge,
-            speed_limit_kmh=autoware_speed_limit_kmh,
-            carla_bridge_passive=False,
-            publish_route=False,
-        )
-        autoware_container = autoware_launch.get("container_name")
-        progress_log.log(
-            "autoware",
-            f"Autoware launch requested in container {autoware_container}.",
-        )
+        if runtime_attempt > 0:
+            progress_log.log(
+                "retry",
+                (
+                    f"Starting runtime attempt {runtime_attempt + 1}/"
+                    f"{max_runtime_attempts} after a transient launch failure."
+                ),
+            )
+            _cleanup_existing_runtime(CARLA_VERSION, progress_log=progress_log)
+            _clear_previous_outputs(output_dir)
 
-        if autoware_startup_wait > 0:
+        try:
+            carla_process = _start_carla(
+                town,
+                timeout=float(carla_timeout),
+                extra_args=carla_extra_args,
+                headless=headless,
+                progress_log=progress_log,
+            )
+            sync_launch = _start_automated_synchronization(
+                scenario.sumocfg_file,
+                carla_process=carla_process,
+                carla_timeout=float(carla_timeout),
+                sumo_gui=not headless,
+                output_dir=output_dir,
+                progress_log=progress_log,
+            )
+            _wait_for_sync_ready(sync_launch, timeout=float(carla_timeout))
+            progress_log.log(
+                "sync",
+                (
+                    "SUMO/TraCI is initialized and gated; simulation time has not "
+                    f"advanced. ready_file={getattr(sync_launch, 'ready_file', None)}"
+                ),
+            )
+
+            progress_log.log("autoware", "Launching Autoware CARLA stack.")
+            autoware_launch = route_tools.launch_autoware_carla_in_container(
+                town,
+                headless=headless,
+                spawn_edge=ego_source_edge,
+                start_edge=ego_source_edge,
+                goal_edge=ego_destination_edge,
+                speed_limit_kmh=autoware_speed_limit_kmh,
+                carla_bridge_passive=False,
+                publish_route=False,
+            )
+            autoware_container = autoware_launch.get("container_name")
             progress_log.log(
                 "autoware",
-                f"Waiting {float(autoware_startup_wait):.1f}s before checking ego actor.",
+                f"Autoware launch requested in container {autoware_container}.",
             )
-            time.sleep(float(autoware_startup_wait))
-        autoware_spawn = _wait_for_autoware_spawn(
-            timeout=float(autoware_spawn_timeout),
-            carla_rpc_timeout=_resolve_autoware_carla_rpc_timeout(
-                explicit_timeout=autoware_carla_rpc_timeout,
-                carla_timeout=float(carla_timeout),
-                spawn_timeout=float(autoware_spawn_timeout),
-            ),
-            progress_log=progress_log,
-        )
 
-        autoware_route_start = start_sumo_and_publish_autoware_route(
-            sync_launch=sync_launch,
-            town=town,
-            container_name=autoware_container,
-            start_edge=ego_source_edge,
-            goal_edge=ego_destination_edge,
-            speed_limit_kmh=autoware_speed_limit_kmh,
-            ego_vehicle_delay=ego_starting_delay,
-            mirror_timeout=float(autoware_sumo_mirror_timeout),
-            route_timeout=float(autoware_route_timeout),
-            progress_log=progress_log,
-        )
+            if autoware_startup_wait > 0:
+                progress_log.log(
+                    "autoware",
+                    f"Waiting {float(autoware_startup_wait):.1f}s before checking ego actor.",
+                )
+                time.sleep(float(autoware_startup_wait))
+            autoware_spawn = _wait_for_autoware_spawn(
+                timeout=float(autoware_spawn_timeout),
+                carla_rpc_timeout=_resolve_autoware_carla_rpc_timeout(
+                    explicit_timeout=autoware_carla_rpc_timeout,
+                    carla_timeout=float(carla_timeout),
+                    spawn_timeout=float(autoware_spawn_timeout),
+                ),
+                progress_log=progress_log,
+            )
 
-        progress_log.log("run", "Waiting for completion outputs.")
-        completion_reason = _wait_for_completion(
-            sync_launch.sync_process,
-            output_dir,
-            simulation_end=resolved_simulation_end,
-            wall_timeout=wall_timeout,
-            stop_on_ego_arrival=stop_on_ego_arrival,
-            critical_battery_threshold=float(ego_critical_battery_threshold),
-            ego_vehicle_id=_completion_ego_vehicle_id(autoware_route_start),
-            destination_edge=ego_destination_edge,
-            destination_edge_end_tolerance=float(destination_edge_end_tolerance),
-            completion_grace_period=float(completion_grace_period),
-            progress_log=progress_log,
-        )
-        progress_log.log("run", f"Completion reason: {completion_reason}.")
-    finally:
-        progress_log.log("cleanup", "Stopping synchronization, Autoware and CARLA.")
-        if sync_launch is not None:
-            _stop_process(sync_launch.sync_process, interrupt=True)
-            _safe_unlink(sync_launch.start_gate_file)
-            _safe_unlink(getattr(sync_launch, "ready_file", None))
-        if autoware_container:
-            _stop_autoware_processes(autoware_container)
-        _stop_carla(carla_process, CARLA_VERSION)
-        progress_log.log("cleanup", "Runtime cleanup requested.")
+            autoware_route_start = start_sumo_and_publish_autoware_route(
+                sync_launch=sync_launch,
+                town=town,
+                container_name=autoware_container,
+                start_edge=ego_source_edge,
+                goal_edge=ego_destination_edge,
+                speed_limit_kmh=autoware_speed_limit_kmh,
+                ego_vehicle_delay=ego_starting_delay,
+                mirror_timeout=float(autoware_sumo_mirror_timeout),
+                route_timeout=float(autoware_route_timeout),
+                progress_log=progress_log,
+            )
+
+            progress_log.log("run", "Waiting for completion outputs.")
+            completion_reason = _wait_for_completion(
+                sync_launch.sync_process,
+                output_dir,
+                simulation_end=resolved_simulation_end,
+                wall_timeout=wall_timeout,
+                stop_on_ego_arrival=stop_on_ego_arrival,
+                critical_battery_threshold=float(ego_critical_battery_threshold),
+                ego_vehicle_id=_completion_ego_vehicle_id(autoware_route_start),
+                destination_edge=ego_destination_edge,
+                destination_edge_end_tolerance=float(destination_edge_end_tolerance),
+                destination_stall_timeout=destination_stall_timeout,
+                completion_grace_period=float(completion_grace_period),
+                progress_log=progress_log,
+            )
+            progress_log.log("run", f"Completion reason: {completion_reason}.")
+            runtime_succeeded = True
+        except Exception as exc:
+            attempts_left = max_runtime_attempts - runtime_attempt - 1
+            progress_log.log(
+                "retry",
+                (
+                    f"Runtime attempt {runtime_attempt + 1}/{max_runtime_attempts} "
+                    f"failed with {type(exc).__name__}: {exc}. "
+                    f"Retries left: {attempts_left}."
+                ),
+            )
+            if attempts_left <= 0:
+                raise
+        finally:
+            progress_log.log("cleanup", "Stopping synchronization, Autoware and CARLA.")
+            if sync_launch is not None:
+                _stop_process(sync_launch.sync_process, interrupt=True)
+                _safe_unlink(sync_launch.start_gate_file)
+                _safe_unlink(getattr(sync_launch, "ready_file", None))
+            if autoware_container:
+                _stop_autoware_processes(autoware_container)
+            _stop_carla(carla_process, CARLA_VERSION)
+            progress_log.log("cleanup", "Runtime cleanup requested.")
+
+        if runtime_succeeded:
+            break
 
     output_paths = _output_paths(output_dir)
     energy_data = _load_energy_output(
@@ -916,6 +953,7 @@ def _start_carla(
     town: str,
     timeout: float,
     extra_args: Optional[Sequence[str]],
+    headless: bool = True,
     progress_log: Optional[_ProgressLogger] = None,
 ) -> subprocess.Popen:
     if route_tools.is_carla_server_ready():
@@ -926,7 +964,7 @@ def _start_carla(
 
     log_file = route_tools.OUTPUT_DIR / "carla_server_automated.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    args = ["./CarlaUE4.sh", "-RenderOffScreen"]
+    args = ["./CarlaUE4.sh", "-RenderOffScreen"] if headless else ["./CarlaUE4.sh"]
     if extra_args:
         args.extend(str(item) for item in extra_args)
     if progress_log is not None:
@@ -1408,6 +1446,31 @@ def _ego_has_arrived_and_stopped(
     return distance_remaining <= 2.0
 
 
+def _ego_stopped_on_destination_edge(
+    state: Dict[str, Any],
+    *,
+    destination_edge: Optional[str],
+) -> bool:
+    if not destination_edge or not _same_sumo_edge(state.get("edge"), destination_edge):
+        return False
+
+    route_final_edge = state.get("route_final_edge")
+    if route_final_edge and not _same_sumo_edge(route_final_edge, destination_edge):
+        return False
+
+    speed = _finite_float(state.get("speed"))
+    return speed is not None and speed <= 0.15
+
+
+def _destination_stall_signature(state: Dict[str, Any]) -> Tuple[Any, Any, Optional[float]]:
+    lane_position = _finite_float(state.get("lane_position_m"))
+    return (
+        _normalize_sumo_edge_id(state.get("edge")),
+        state.get("lane"),
+        round(lane_position, 1) if lane_position is not None else None,
+    )
+
+
 def _ego_completed_destination_edge(
     state: Dict[str, Any],
     *,
@@ -1432,6 +1495,9 @@ def _ego_battery_below_threshold(
     *,
     fallback_threshold: float,
 ) -> bool:
+    if str(state.get("battery_stop_applied", "")).strip().lower() in {"1", "true", "yes"}:
+        return True
+
     battery = _finite_float(state.get("battery"))
     threshold = _finite_float(state.get("battery_failure_threshold"))
     if threshold is None or threshold <= 0:
@@ -1452,6 +1518,7 @@ def _wait_for_completion(
     ego_vehicle_id: Optional[str],
     destination_edge: Optional[str],
     destination_edge_end_tolerance: float,
+    destination_stall_timeout: Optional[float],
     completion_grace_period: float,
     dashboard_api_url: str = DEFAULT_DASHBOARD_API_URL,
     progress_log: Optional[_ProgressLogger] = None,
@@ -1468,6 +1535,8 @@ def _wait_for_completion(
     resolved_ego_vehicle_id = ego_vehicle_id
     last_api_error = None
     destination_edge_completed = False
+    destination_stopped_since = None
+    destination_stopped_signature = None
     last_state_log_at = 0.0
 
     while time.time() < deadline:
@@ -1536,7 +1605,38 @@ def _wait_for_completion(
                 destination_edge=destination_edge,
             ):
                 completion_reason = "ego_arrived_and_stopped"
-            elif _ego_battery_below_threshold(
+            elif (
+                stop_on_ego_arrival
+                and destination_stall_timeout is not None
+                and float(destination_stall_timeout) >= 0
+                and _ego_stopped_on_destination_edge(
+                    state,
+                    destination_edge=destination_edge,
+                )
+            ):
+                now = time.time()
+                signature = _destination_stall_signature(state)
+                if signature != destination_stopped_signature:
+                    destination_stopped_signature = signature
+                    destination_stopped_since = now
+                    if progress_log is not None:
+                        progress_log.log(
+                            "run",
+                            (
+                                "Ego is stopped on the destination edge; "
+                                f"waiting up to {float(destination_stall_timeout):.1f}s "
+                                "before treating it as terminal."
+                            ),
+                        )
+                elif destination_stopped_since is not None and (
+                    now - destination_stopped_since >= float(destination_stall_timeout)
+                ):
+                    completion_reason = "ego_stopped_on_destination_edge"
+            else:
+                destination_stopped_since = None
+                destination_stopped_signature = None
+
+            if completion_reason is None and _ego_battery_below_threshold(
                 state,
                 fallback_threshold=float(critical_battery_threshold),
             ):
@@ -1626,7 +1726,7 @@ def _kill_process_tree(process: subprocess.Popen) -> None:
             pass
 
 
-def _stop_autoware_processes(container_name: str) -> None:
+def _stop_autoware_processes(container_name: str, timeout: float = 20.0) -> None:
     docker = shutil.which("docker")
     if docker is None:
         return
@@ -1636,6 +1736,8 @@ def _stop_autoware_processes(container_name: str) -> None:
         "roslaunch autoware_mini start_carla_headless.launch",
         "start_carla.launch",
         "start_carla_headless.launch",
+        "roslaunch",
+        "autoware_mini",
         "carla_ros_bridge",
         "carla_waypoints_publisher",
         "lanelet2_global_planner",
@@ -1645,19 +1747,87 @@ def _stop_autoware_processes(container_name: str) -> None:
         "rviz",
     ]
     pattern = "|".join(re.escape(item) for item in patterns)
-    command = (
-        f"pkill -TERM -f {json.dumps(pattern)} || true; "
-        "sleep 2; "
-        f"pkill -KILL -f {json.dumps(pattern)} || true"
-    )
-    subprocess.run(
-        [docker, "exec", str(container_name), "bash", "-lc", command],
-        env=os.environ.copy(),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        check=False,
-    )
+    cleanup_script = r"""
+import os
+import re
+import signal
+import time
+
+
+pattern = re.compile(os.environ["AUTOWARE_STOP_PATTERN"])
+timeout = float(os.environ.get("AUTOWARE_STOP_TIMEOUT_SECONDS", "20"))
+current_pid = os.getpid()
+
+
+def process_text(pid):
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as handle:
+            cmdline = handle.read().replace(b"\0", b" ").decode("utf-8", "ignore")
+        with open(f"/proc/{pid}/comm", "r", encoding="utf-8", errors="ignore") as handle:
+            comm = handle.read().strip()
+    except OSError:
+        return ""
+    return f"{comm} {cmdline}"
+
+
+def matching_pids():
+    pids = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if pid == current_pid:
+            continue
+        if pattern.search(process_text(pid)):
+            pids.append(pid)
+    return pids
+
+
+def signal_matches(sig):
+    for pid in matching_pids():
+        try:
+            os.kill(pid, sig)
+        except OSError:
+            pass
+
+
+def wait_for_exit(seconds):
+    deadline = time.time() + max(float(seconds), 0.0)
+    while time.time() < deadline:
+        if not matching_pids():
+            return True
+        time.sleep(0.25)
+    return not matching_pids()
+
+
+signal_matches(signal.SIGTERM)
+if not wait_for_exit(timeout / 2.0):
+    signal_matches(signal.SIGKILL)
+    wait_for_exit(timeout / 2.0)
+""".strip()
+    try:
+        subprocess.run(
+            [
+                docker,
+                "exec",
+                "-e",
+                f"AUTOWARE_STOP_PATTERN={pattern}",
+                "-e",
+                f"AUTOWARE_STOP_TIMEOUT_SECONDS={float(timeout)}",
+                str(container_name),
+                "python3",
+                "-c",
+                cleanup_script,
+            ],
+            env=os.environ.copy(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=max(float(timeout) + 5.0, 5.0),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def _stop_carla(process: Optional[subprocess.Popen], version: str) -> None:
@@ -1666,6 +1836,7 @@ def _stop_carla(process: Optional[subprocess.Popen], version: str) -> None:
     except Exception:
         pass
     _stop_process(process, interrupt=False)
+    _wait_for_carla_port_closed(timeout=15.0)
 
 
 def _safe_unlink(path: Optional[Path]) -> None:

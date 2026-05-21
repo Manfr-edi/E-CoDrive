@@ -1171,6 +1171,7 @@ def launch_autoware_carla_in_container(
     start_edge=None,
     goal_edge=None,
     speed_limit_kmh=None,
+    headless=False,
     carla_bridge_passive=False,
     publish_route=True,
 ):
@@ -1212,7 +1213,11 @@ def launch_autoware_carla_in_container(
         )
 
     container = find_running_autoware_container(name_filter=name_filter)
-    x11_setup = _prepare_autoware_x11_access()
+    x11_setup = (
+        {"display": "", "host_command": None}
+        if headless
+        else _prepare_autoware_x11_access()
+    )
     container_name = container.get("Names") or container.get("ID")
     docker_binary = shutil.which("docker")
     ensure_autoware_blueprint_available(container_name)
@@ -1234,6 +1239,12 @@ def launch_autoware_carla_in_container(
         "source /opt/catkin_ws/devel/setup.bash && "
         + f"exec roslaunch autoware_mini start_carla_headless.launch "
         f"map_name:={shlex.quote(map_name)} generate_traffic:=false"
+    ) if headless else (
+        "source /root/.bashrc && "
+        "source /opt/ros/noetic/setup.bash && "
+        "source /opt/catkin_ws/devel/setup.bash && "
+        + f"exec roslaunch autoware_mini start_carla.launch "
+        f"map_name:={shlex.quote(map_name)} generate_traffic:=false"
     )
     if spawn_point_data is not None:
         command += f" spawn_point:={shlex.quote(spawn_point_data['spawn_point'])}"
@@ -1241,24 +1252,34 @@ def launch_autoware_carla_in_container(
         command += " passive:=true"
     if route_requested:
         command += " load_goals:=false"
-    process = subprocess.run(
+    docker_command = [
+        docker_binary,
+        "exec",
+        "-d",
+    ]
+    if not headless:
+        docker_command.extend(
+            [
+                "-e",
+                f"DISPLAY={x11_setup['display']}",
+                "-e",
+                "QT_X11_NO_MITSHM=1",
+                "-e",
+                "XAUTHORITY=/root/.Xauthority",
+            ]
+        )
+    docker_command.extend(
         [
-            docker_binary,
-            "exec",
-            "-d",
-            "-e",
-            f"DISPLAY={x11_setup['display']}",
-            "-e",
-            "QT_X11_NO_MITSHM=1",
-            "-e",
-            "XAUTHORITY=/root/.Xauthority",
             "-w",
             "/opt/catkin_ws",
             str(container_name),
             "bash",
             "-lc",
             command,
-        ],
+        ]
+    )
+    process = subprocess.run(
+        docker_command,
         env=_docker_exec_env(),
         capture_output=True,
         text=True,
