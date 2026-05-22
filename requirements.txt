@@ -1,0 +1,9 @@
+flask==3.0.3
+lxml==6.1.0
+matplotlib
+pandas
+psutil
+seaborn
+setuptools<81
+sumolib==1.26.0
+traci==1.26.0
