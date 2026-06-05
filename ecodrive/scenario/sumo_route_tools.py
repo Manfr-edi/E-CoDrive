@@ -1237,8 +1237,8 @@ def launch_autoware_carla_in_container(
         "source /root/.bashrc && "
         "source /opt/ros/noetic/setup.bash && "
         "source /opt/catkin_ws/devel/setup.bash && "
-        + f"exec roslaunch autoware_mini start_carla_headless.launch "
-        f"map_name:={shlex.quote(map_name)} generate_traffic:=false"
+        + f"exec roslaunch autoware_mini start_carla.launch "
+        f"map_name:={shlex.quote(map_name)} generate_traffic:=false launch_rviz:=false"
     ) if headless else (
         "source /root/.bashrc && "
         "source /opt/ros/noetic/setup.bash && "
@@ -1290,6 +1290,31 @@ def launch_autoware_carla_in_container(
             f"{process.stderr.strip() or process.stdout.strip()}"
         )
 
+    time.sleep(3.0)
+    probe = subprocess.run(
+        [
+            docker_binary,
+            "exec",
+            str(container_name),
+            "bash",
+            "-lc",
+            (
+                "ps -eo pid,etime,stat,cmd | "
+                "grep -E 'roslaunch autoware_mini start_carla|carla_ros_bridge|carla_spawn_objects' | "
+                "grep -v grep || true"
+            ),
+        ],
+        env=_docker_exec_env(),
+        capture_output=True,
+        text=True,
+    )
+    launch_probe = probe.stdout.strip()
+    if not launch_probe:
+        raise RuntimeError(
+            "Autoware launch command returned, but no Autoware/CARLA ROS processes "
+            f"were still running after 3 seconds. Command: {command}"
+        )
+
     route_publication = None
     route_publication_error = None
     if route_requested and publish_route:
@@ -1310,6 +1335,7 @@ def launch_autoware_carla_in_container(
         "display": x11_setup["display"],
         "host_command": x11_setup["host_command"],
         "command": command,
+        "launch_probe": launch_probe,
         "carla_bridge_passive": bool(carla_bridge_passive),
         "route_deferred": bool(route_requested and not publish_route),
         "spawn_edge": resolved_spawn_edge or None,
@@ -1946,6 +1972,161 @@ def read_sumo_edges(map_name=DEFAULT_MAP):
         )
 
     return sorted(edges, key=lambda item: item.edge_id)
+
+
+def edge_centroid(edge):
+    """Return the geometric center of a SUMO edge shape."""
+    points = edge.shape or ()
+    if not points:
+        return 0.0, 0.0
+    x_values = [float(point[0]) for point in points]
+    y_values = [float(point[1]) for point in points]
+    return sum(x_values) / len(x_values), sum(y_values) / len(y_values)
+
+
+def edge_heading_degrees(edge):
+    """Return the heading from the first to the last shape point."""
+    points = edge.shape or ()
+    if len(points) < 2:
+        return 0.0
+    start_x, start_y = points[0]
+    end_x, end_y = points[-1]
+    return math.degrees(math.atan2(float(end_y) - float(start_y), float(end_x) - float(start_x)))
+
+
+def _interleave_bits(x_value, y_value):
+    """Build a Morton/Z-order key for two 16-bit coordinates."""
+    x_value = max(0, min(65535, int(x_value)))
+    y_value = max(0, min(65535, int(y_value)))
+    result = 0
+    for bit in range(16):
+        result |= ((x_value >> bit) & 1) << (2 * bit)
+        result |= ((y_value >> bit) & 1) << (2 * bit + 1)
+    return result
+
+
+def _edge_spatial_key(edge, bounds):
+    min_x, max_x, min_y, max_y = bounds
+    center_x, center_y = edge_centroid(edge)
+    range_x = max(max_x - min_x, 1e-9)
+    range_y = max(max_y - min_y, 1e-9)
+    normalized_x = round(((center_x - min_x) / range_x) * 65535)
+    normalized_y = round(((center_y - min_y) / range_y) * 65535)
+    return (
+        _interleave_bits(normalized_x, normalized_y),
+        round(edge_heading_degrees(edge), 3),
+        edge.edge_id,
+    )
+
+
+def edge_catalog(map_name=DEFAULT_MAP, order_by="spatial", min_length=0.0):
+    """Return selectable SUMO edges with stable integer indexes.
+
+    ``order_by="spatial"`` sorts edges by their centroid on a Morton curve, so
+    nearby integer indexes tend to represent nearby map regions. This is useful
+    when an optimizer can only vary numeric values.
+    """
+    edges = [
+        edge for edge in read_sumo_edges(map_name)
+        if float(edge.length) >= float(min_length)
+    ]
+    normalized_order = str(order_by or "spatial").strip().lower()
+
+    if normalized_order in {"spatial", "morton", "zorder", "z_order"} and edges:
+        centroids = [edge_centroid(edge) for edge in edges]
+        x_values = [point[0] for point in centroids]
+        y_values = [point[1] for point in centroids]
+        bounds = (min(x_values), max(x_values), min(y_values), max(y_values))
+        edges = sorted(edges, key=lambda edge: _edge_spatial_key(edge, bounds))
+    elif normalized_order == "length":
+        edges = sorted(edges, key=lambda edge: (edge.length, edge.edge_id))
+    elif normalized_order == "id":
+        edges = sorted(edges, key=lambda edge: edge.edge_id)
+    else:
+        raise ValueError("edge_catalog order_by must be one of: spatial, length, id.")
+
+    catalog = []
+    for index, edge in enumerate(edges):
+        center_x, center_y = edge_centroid(edge)
+        catalog.append(
+            {
+                "index": index,
+                "edge_id": edge.edge_id,
+                "from_node": edge.from_node,
+                "to_node": edge.to_node,
+                "length": float(edge.length),
+                "lane_count": int(edge.lane_count),
+                "center_x": float(center_x),
+                "center_y": float(center_y),
+                "heading_degrees": float(edge_heading_degrees(edge)),
+            }
+        )
+    return catalog
+
+
+def edge_id_from_index(index, map_name=DEFAULT_MAP, order_by="spatial", min_length=0.0):
+    """Resolve an optimizer-friendly numeric edge index to a SUMO edge id."""
+    catalog = edge_catalog(map_name, order_by=order_by, min_length=min_length)
+    if not catalog:
+        raise ValueError(f"No selectable SUMO edges found for map {map_name}.")
+    selected = max(0, min(len(catalog) - 1, int(round(float(index)))))
+    return catalog[selected]["edge_id"]
+
+
+def edge_index_from_id(edge_id, map_name=DEFAULT_MAP, order_by="spatial", min_length=0.0):
+    """Return the catalog index for a SUMO edge id."""
+    for item in edge_catalog(map_name, order_by=order_by, min_length=min_length):
+        if item["edge_id"] == str(edge_id):
+            return item["index"]
+    raise ValueError(f"Edge {edge_id!r} is not selectable for map {map_name}.")
+
+
+def edge_id_near_edge(
+    reference_edge_id,
+    rank,
+    map_name=DEFAULT_MAP,
+    order_by="spatial",
+    min_length=0.0,
+    include_reference=True,
+):
+    """Resolve a rank among edges nearest to a reference edge centroid."""
+    reference_edge_id = str(reference_edge_id)
+    catalog = edge_catalog(map_name, order_by=order_by, min_length=min_length)
+    if not catalog:
+        raise ValueError(f"No selectable SUMO edges found for map {map_name}.")
+
+    reference = next(
+        (item for item in catalog if item["edge_id"] == reference_edge_id),
+        None,
+    )
+    if reference is None:
+        reference_edge = next(
+            (edge for edge in read_sumo_edges(map_name) if edge.edge_id == reference_edge_id),
+            None,
+        )
+        if reference_edge is None:
+            raise ValueError(f"Reference edge {reference_edge_id!r} is not present in map {map_name}.")
+        reference_x, reference_y = edge_centroid(reference_edge)
+    else:
+        reference_x = float(reference["center_x"])
+        reference_y = float(reference["center_y"])
+
+    candidates = []
+    for item in catalog:
+        if not include_reference and item["edge_id"] == reference_edge_id:
+            continue
+        distance = math.hypot(
+            float(item["center_x"]) - reference_x,
+            float(item["center_y"]) - reference_y,
+        )
+        candidates.append((distance, item["index"], item["edge_id"]))
+
+    if not candidates:
+        raise ValueError(f"No selectable neighbor edges found near {reference_edge_id!r}.")
+
+    candidates.sort()
+    selected = max(0, min(len(candidates) - 1, int(round(float(rank)))))
+    return candidates[selected][2]
 
 
 def edge_label(edge):
@@ -2688,6 +2869,8 @@ def generate_congestion_scenario(
                 str(trip_file),
                 "-o",
                 str(route_file),
+                "--seed",
+                str(int(seed) + attempt - 1),
                 "--ignore-errors",
                 "--no-step-log",
                 "--no-warnings",
@@ -3049,7 +3232,7 @@ def wait_for_carla_server(
     )
 
 
-def load_carla_map(map_name, log_file=None):
+def load_carla_map(map_name, log_file=None, no_rendering=True):
     """Load the selected CARLA map on the running server."""
     if log_file is None:
         log_file = OUTPUT_DIR / "carla_map.log"
@@ -3058,6 +3241,8 @@ def load_carla_map(map_name, log_file=None):
 
     python_executable = resolve_carla_python_executable()
     cmd = [str(python_executable), "PythonAPI/util/config.py", "--map", map_name]
+    if no_rendering:
+        cmd.append("--no-rendering")
     process = subprocess.run(
         cmd,
         cwd=str(CARLA_DIR),
@@ -3083,4 +3268,3 @@ def load_carla_map(map_name, log_file=None):
         )
 
     return process.stdout, process.stderr
-

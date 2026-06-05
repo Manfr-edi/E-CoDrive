@@ -136,6 +136,9 @@ def simulate(
     completion_grace_period: float = 3.0,
     destination_edge_end_tolerance: float = 22.0,
     destination_stall_timeout: Optional[float] = 45.0,
+    ego_stall_timeout: Optional[float] = 240.0,
+    ego_stall_speed_threshold: float = 0.05,
+    ego_stall_movement_tolerance: float = 1.0,
     runtime_retries: int = 2,
     generate_plots: bool = True,
     cleanup_existing: bool = True,
@@ -322,6 +325,13 @@ def simulate(
                 "autoware",
                 f"Autoware launch requested in container {autoware_container}.",
             )
+            if autoware_launch.get("command"):
+                progress_log.log("autoware", f"Autoware command: {autoware_launch['command']}")
+            if autoware_launch.get("launch_probe"):
+                progress_log.log(
+                    "autoware",
+                    f"Autoware launch probe:\n{autoware_launch['launch_probe']}",
+                )
 
             if autoware_startup_wait > 0:
                 progress_log.log(
@@ -364,6 +374,9 @@ def simulate(
                 destination_edge=ego_destination_edge,
                 destination_edge_end_tolerance=float(destination_edge_end_tolerance),
                 destination_stall_timeout=destination_stall_timeout,
+                ego_stall_timeout=ego_stall_timeout,
+                ego_stall_speed_threshold=float(ego_stall_speed_threshold),
+                ego_stall_movement_tolerance=float(ego_stall_movement_tolerance),
                 completion_grace_period=float(completion_grace_period),
                 progress_log=progress_log,
             )
@@ -994,6 +1007,7 @@ def _start_carla(
         route_tools.load_carla_map(
             town,
             log_file=route_tools.OUTPUT_DIR / "carla_map_headless.log",
+            no_rendering=headless,
         )
         world_ready = _wait_for_carla_world_ready(
             town,
@@ -1470,6 +1484,43 @@ def _destination_stall_signature(state: Dict[str, Any]) -> Tuple[Any, Any, Optio
     )
 
 
+def _ego_is_stopped_for_stall(state: Dict[str, Any], *, speed_threshold: float) -> bool:
+    speed = _finite_float(state.get("speed"))
+    return speed is not None and speed <= max(float(speed_threshold), 0.0)
+
+
+def _ego_stall_progress(
+    state: Dict[str, Any],
+) -> Tuple[Any, Any, Optional[float], Optional[float], Optional[float]]:
+    return (
+        _normalize_sumo_edge_id(state.get("edge")),
+        state.get("lane"),
+        _finite_float(state.get("lane_position_m")),
+        _finite_float(state.get("distance_remaining_m")),
+        _finite_float(state.get("distance_travelled_m")),
+    )
+
+
+def _ego_stall_progress_changed(
+    previous: Tuple[Any, Any, Optional[float], Optional[float], Optional[float]],
+    current: Tuple[Any, Any, Optional[float], Optional[float], Optional[float]],
+    *,
+    movement_tolerance: float,
+) -> bool:
+    if previous[:2] != current[:2]:
+        return True
+
+    tolerance = max(float(movement_tolerance), 0.0)
+    for previous_value, current_value in zip(previous[2:], current[2:]):
+        if previous_value is None or current_value is None:
+            if previous_value != current_value:
+                return True
+            continue
+        if abs(float(current_value) - float(previous_value)) > tolerance:
+            return True
+    return False
+
+
 def _ego_completed_destination_edge(
     state: Dict[str, Any],
     *,
@@ -1518,6 +1569,9 @@ def _wait_for_completion(
     destination_edge: Optional[str],
     destination_edge_end_tolerance: float,
     destination_stall_timeout: Optional[float],
+    ego_stall_timeout: Optional[float],
+    ego_stall_speed_threshold: float,
+    ego_stall_movement_tolerance: float,
     completion_grace_period: float,
     automated_api_url: str = DEFAULT_AUTOMATED_API_URL,
     progress_log: Optional[_ProgressLogger] = None,
@@ -1536,6 +1590,8 @@ def _wait_for_completion(
     destination_edge_completed = False
     destination_stopped_since = None
     destination_stopped_signature = None
+    ego_stopped_since = None
+    ego_stall_baseline = None
     last_state_log_at = 0.0
 
     while time.time() < deadline:
@@ -1640,6 +1696,44 @@ def _wait_for_completion(
                 fallback_threshold=float(critical_battery_threshold),
             ):
                 completion_reason = "critical_battery_threshold"
+
+            if (
+                completion_reason is None
+                and ego_stall_timeout is not None
+                and float(ego_stall_timeout) >= 0
+                and _ego_is_stopped_for_stall(
+                    state,
+                    speed_threshold=float(ego_stall_speed_threshold),
+                )
+            ):
+                now = time.time()
+                current_progress = _ego_stall_progress(state)
+                if (
+                    ego_stall_baseline is None
+                    or _ego_stall_progress_changed(
+                        ego_stall_baseline,
+                        current_progress,
+                        movement_tolerance=float(ego_stall_movement_tolerance),
+                    )
+                ):
+                    ego_stall_baseline = current_progress
+                    ego_stopped_since = now
+                    if progress_log is not None:
+                        progress_log.log(
+                            "run",
+                            (
+                                "Ego is stopped without route progress; "
+                                f"waiting up to {float(ego_stall_timeout):.1f}s "
+                                "before treating it as terminal."
+                            ),
+                        )
+                elif ego_stopped_since is not None and (
+                    now - ego_stopped_since >= float(ego_stall_timeout)
+                ):
+                    completion_reason = "ego_stalled"
+            else:
+                ego_stopped_since = None
+                ego_stall_baseline = None
 
             if completion_reason is not None:
                 completion_detected_at = time.time()
