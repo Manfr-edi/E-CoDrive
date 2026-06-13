@@ -2767,7 +2767,7 @@ def _write_sumocfg(map_name, route_file, sumocfg_file, simulation_end=None):
     ET.SubElement(output, "vehroute-output", {"value": "output/vehroute.xml"})
     ET.SubElement(output, "summary-output", {"value": "output/summary.xml"})
     ET.SubElement(output, "edgedata-output", {"value": "output/edgedata-output.xml"})
-    ET.SubElement(output, "emission-output", {"value": "output/emission-output.xml"})
+    output.append(ET.Comment(' <emission-output value="output/emission-output.xml" /> '))
 
     _write_xml(sumocfg_file, root)
 

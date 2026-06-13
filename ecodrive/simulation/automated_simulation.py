@@ -67,6 +67,7 @@ class SimulationResult:
     summary_records: List[Dict[str, str]]
     sync_returncode: Optional[int]
     completion_reason: str
+    last_ego_state: Dict[str, Any]
     progress_log_path: str
 
 
@@ -265,9 +266,11 @@ def simulate(
     autoware_spawn = None
     autoware_route_start = None
     completion_reason = "unknown"
+    last_ego_state: Dict[str, Any] = {}
     max_runtime_attempts = max(1, int(runtime_retries) + 1)
 
     for runtime_attempt in range(max_runtime_attempts):
+        last_ego_state.clear()
         carla_process = None
         sync_launch = None
         autoware_container = None
@@ -378,6 +381,7 @@ def simulate(
                 ego_stall_speed_threshold=float(ego_stall_speed_threshold),
                 ego_stall_movement_tolerance=float(ego_stall_movement_tolerance),
                 completion_grace_period=float(completion_grace_period),
+                state_sink=last_ego_state,
                 progress_log=progress_log,
             )
             progress_log.log("run", f"Completion reason: {completion_reason}.")
@@ -393,6 +397,7 @@ def simulate(
                 ),
             )
             if attempts_left <= 0:
+                setattr(exc, "last_ego_state", dict(last_ego_state))
                 raise
         finally:
             progress_log.log("cleanup", "Stopping synchronization, Autoware and CARLA.")
@@ -483,6 +488,7 @@ def simulate(
             else None
         ),
         completion_reason=completion_reason,
+        last_ego_state=dict(last_ego_state),
         progress_log_path=str(progress_log.path),
     )
 
@@ -1574,6 +1580,7 @@ def _wait_for_completion(
     ego_stall_movement_tolerance: float,
     completion_grace_period: float,
     automated_api_url: str = DEFAULT_AUTOMATED_API_URL,
+    state_sink: Optional[Dict[str, Any]] = None,
     progress_log: Optional[_ProgressLogger] = None,
 ) -> str:
     timeout = (
@@ -1628,6 +1635,10 @@ def _wait_for_completion(
                         state = mirror_vehicle
         except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
             last_api_error = exc
+
+        if state is not None and state_sink is not None:
+            state_sink.clear()
+            state_sink.update(state)
 
         if state is not None and completion_detected_at is None:
             if _ego_completed_destination_edge(
