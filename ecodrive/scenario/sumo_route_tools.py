@@ -7,6 +7,7 @@ import os
 import random
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -74,9 +75,9 @@ ENERGY_PARAM_DEFAULTS = {
     "frontSurfaceArea": "2.2",
     "rotatingMass": "80",
     "maximumPower": "350000",
-    "propulsionEfficiency": ".98",
+    "propulsionEfficiency": ".80",
     "radialDragCoefficient": "0.1",
-    "recuperationEfficiency": ".96",
+    "recuperationEfficiency": ".80",
     "rollDragCoefficient": "0.01",
     "stoppingThreshold": "0.1",
 }
@@ -465,6 +466,7 @@ def ensure_carla_runner_dependencies_ready():
         "-c",
         (
             "import carla; "
+            "import setuptools; "
             "import flask; "
             "import lxml.etree; "
             "import traci; "
@@ -483,12 +485,29 @@ def ensure_carla_runner_dependencies_ready():
     details = (process.stderr or process.stdout or "").strip()
     if details:
         details = details.splitlines()[-1]
+    elif process.returncode < 0:
+        signal_number = -process.returncode
+        try:
+            signal_name = signal.Signals(signal_number).name
+        except ValueError:
+            signal_name = f"signal {signal_number}"
+        api_archive = selected_carla_python_api_archive()
+        archive_details = (
+            f" while loading bundled API archive `{api_archive.name}`"
+            if api_archive is not None
+            else ""
+        )
+        details = (
+            f"dependency probe terminated by {signal_name}{archive_details}. "
+            "This usually means the selected interpreter is binary-incompatible "
+            "with the bundled CARLA Python API; select a compatible runner with "
+            f"`{_carla_python_env_var_name()}=/path/to/python`."
+        )
 
     raise RuntimeError(
-        "The selected CARLA runner Python environment is missing required modules "
+        "The selected CARLA runner Python environment is not usable "
         f"(version {active_carla_version()}, interpreter {python_executable}). "
-        "Install at least `setuptools`, `flask`, `lxml`, and the SUMO Python tools "
-        "(`traci`, `sumolib`) in that interpreter. "
+        "It must import `carla`, `setuptools`, `flask`, `lxml`, `traci`, and `sumolib`. "
         f"{details or 'dependency import failed.'}"
     )
 
@@ -757,6 +776,221 @@ if carla_refresh not in carla_text:
 patches.append({
     "path": str(carla_path),
     "updated": carla_text != carla_original,
+})
+
+vehicle_interface_path = Path("/opt/catkin_ws/src/autoware_mini/nodes/platform/carla/carla_vehicle_interface.py")
+vehicle_interface_text = vehicle_interface_path.read_text()
+vehicle_interface_original = vehicle_interface_text
+vehicle_interface_init_marker = (
+    "        self.manual_override = False\n"
+)
+vehicle_interface_speed_state = (
+    "        self.current_speed = 0.0\n"
+)
+if vehicle_interface_speed_state not in vehicle_interface_text:
+    if vehicle_interface_init_marker not in vehicle_interface_text:
+        raise RuntimeError("Could not locate carla_vehicle_interface initializer")
+    vehicle_interface_text = vehicle_interface_text.replace(
+        vehicle_interface_init_marker,
+        vehicle_interface_init_marker + "\n" + vehicle_interface_speed_state,
+        1,
+    )
+
+vehicle_interface_marker = (
+    "        msg.steering_angle = data.ctrl_cmd.steering_angle\n"
+    "        msg.acceleration = data.ctrl_cmd.linear_acceleration"
+)
+vehicle_interface_previous_clamp = (
+    "        speed_limit_kmh = rospy.get_param(\"/planning/speed_limit\", None)\n"
+    "        if speed_limit_kmh is not None:\n"
+    "            speed_limit_mps = abs(float(speed_limit_kmh)) / 3.6\n"
+    "            msg.speed = max(-speed_limit_mps, min(speed_limit_mps, msg.speed))\n"
+)
+vehicle_interface_clamp = (
+    "        speed_limit_kmh = rospy.get_param(\"/planning/speed_limit\", None)\n"
+    "        if speed_limit_kmh is not None:\n"
+    "            speed_limit_mps = abs(float(speed_limit_kmh)) / 3.6\n"
+    "            msg.speed = max(-speed_limit_mps, min(speed_limit_mps, msg.speed))\n"
+    "            if abs(self.current_speed) > speed_limit_mps:\n"
+    "                msg.acceleration = min(msg.acceleration, -1.0)\n"
+)
+if vehicle_interface_clamp not in vehicle_interface_text:
+    if vehicle_interface_previous_clamp in vehicle_interface_text:
+        vehicle_interface_text = vehicle_interface_text.replace(
+            vehicle_interface_previous_clamp,
+            vehicle_interface_clamp,
+            1,
+        )
+    elif vehicle_interface_marker not in vehicle_interface_text:
+        raise RuntimeError("Could not locate carla_vehicle_interface command callback")
+    else:
+        vehicle_interface_text = vehicle_interface_text.replace(
+            vehicle_interface_marker,
+            vehicle_interface_marker + "\n" + vehicle_interface_clamp.rstrip("\n"),
+            1,
+        )
+
+vehicle_interface_status_marker = (
+    "        status = VehicleStatus()\n"
+)
+vehicle_interface_status_speed = (
+    "        self.current_speed = data.velocity\n"
+)
+if vehicle_interface_status_speed not in vehicle_interface_text:
+    if vehicle_interface_status_marker not in vehicle_interface_text:
+        raise RuntimeError("Could not locate carla_vehicle_interface status callback")
+    vehicle_interface_text = vehicle_interface_text.replace(
+        vehicle_interface_status_marker,
+        vehicle_interface_status_speed + vehicle_interface_status_marker,
+        1,
+    )
+
+if vehicle_interface_text != vehicle_interface_original:
+    vehicle_interface_path.write_text(vehicle_interface_text)
+patches.append({
+    "path": str(vehicle_interface_path),
+    "updated": vehicle_interface_text != vehicle_interface_original,
+})
+
+ackermann_path = Path("/opt/catkin_ws/src/carla_ros_bridge/carla_ackermann_control/src/carla_ackermann_control/carla_ackermann_control_node.py")
+ackermann_text = ackermann_path.read_text()
+ackermann_original = ackermann_text
+ackermann_import_marker = "import ros_compatibility as roscomp\n"
+ackermann_import = "import rospy\n"
+if ackermann_import not in ackermann_text:
+    if ackermann_import_marker not in ackermann_text:
+        raise RuntimeError("Could not locate carla_ackermann_control imports")
+    ackermann_text = ackermann_text.replace(
+        ackermann_import_marker,
+        ackermann_import + ackermann_import_marker,
+        1,
+    )
+
+ackermann_method_marker = (
+    "    def vehicle_status_updated(self, vehicle_status):\n"
+)
+ackermann_method = (
+    "    def get_external_speed_limit_mps(self):\n"
+    "        speed_limit_kmh = rospy.get_param(\"/planning/speed_limit\", None)\n"
+    "        if speed_limit_kmh is None:\n"
+    "            speed_limit_kmh = rospy.get_param(\"speed_limit\", None)\n"
+    "        if speed_limit_kmh is None:\n"
+    "            try:\n"
+    "                with open(\"/opt/catkin_ws/src/autoware_mini/config/planning.yaml\", \"r\") as planning_config:\n"
+    "                    for line in planning_config:\n"
+    "                        stripped = line.strip()\n"
+    "                        if stripped.startswith(\"speed_limit:\"):\n"
+    "                            speed_limit_kmh = stripped.split(\":\", 1)[1].split(\"#\", 1)[0].strip()\n"
+    "                            break\n"
+    "            except Exception:\n"
+    "                speed_limit_kmh = None\n"
+    "        if speed_limit_kmh is None:\n"
+    "            return None\n"
+    "        return abs(float(speed_limit_kmh)) / 3.6\n"
+    "\n"
+)
+if ackermann_method not in ackermann_text:
+    if ackermann_method_marker not in ackermann_text:
+        raise RuntimeError("Could not locate carla_ackermann_control status callback")
+    ackermann_text = ackermann_text.replace(
+        ackermann_method_marker,
+        ackermann_method + ackermann_method_marker,
+        1,
+    )
+
+ackermann_precontrol_marker = (
+    "        self.control_steering()\n"
+    "        self.control_stop_and_reverse()\n"
+    "        self.run_speed_control_loop()\n"
+)
+ackermann_precontrol = (
+    "        self.control_steering()\n"
+    "        self.control_stop_and_reverse()\n"
+    "        speed_limit_mps = self.get_external_speed_limit_mps()\n"
+    "        if speed_limit_mps is not None:\n"
+    "            if self.info.target.speed_abs > speed_limit_mps:\n"
+    "                direction = numpy.sign(self.info.target.speed)\n"
+    "                if direction == 0:\n"
+    "                    direction = 1.0\n"
+    "                self.set_target_speed(direction * speed_limit_mps)\n"
+    "            if self.info.current.speed_abs >= speed_limit_mps * 0.8:\n"
+    "                self.set_target_accel(0.0)\n"
+    "        self.run_speed_control_loop()\n"
+)
+if ackermann_precontrol not in ackermann_text:
+    if ackermann_precontrol_marker not in ackermann_text:
+        raise RuntimeError("Could not locate carla_ackermann_control control loop start")
+    ackermann_text = ackermann_text.replace(
+        ackermann_precontrol_marker,
+        ackermann_precontrol,
+        1,
+    )
+
+ackermann_pedal_marker = (
+    "        self.run_speed_control_loop()\n"
+    "        self.run_accel_control_loop()\n"
+    "        if not self.info.output.hand_brake:\n"
+)
+ackermann_pedal_override = (
+    "        self.run_speed_control_loop()\n"
+    "        self.run_accel_control_loop()\n"
+    "        if speed_limit_mps is not None and self.info.current.speed_abs > speed_limit_mps:\n"
+    "            self.info.status.accel_control_pedal_target = -self.info.restrictions.max_pedal\n"
+    "        if not self.info.output.hand_brake:\n"
+)
+if ackermann_pedal_override not in ackermann_text:
+    if ackermann_pedal_marker not in ackermann_text:
+        raise RuntimeError("Could not locate carla_ackermann_control accel loop")
+    ackermann_text = ackermann_text.replace(
+        ackermann_pedal_marker,
+        ackermann_pedal_override,
+        1,
+    )
+
+ackermann_marker = (
+    "            self.update_drive_vehicle_control_command()\n"
+    "\n"
+    "            # only send out the Carla Control Command if AckermannDrive messages are\n"
+)
+ackermann_previous_clamp = (
+    "            speed_limit_kmh = rospy.get_param(\"/planning/speed_limit\", None)\n"
+    "            if speed_limit_kmh is not None:\n"
+    "                speed_limit_mps = abs(float(speed_limit_kmh)) / 3.6\n"
+    "                if self.info.current.speed_abs > speed_limit_mps:\n"
+    "                    self.info.output.throttle = 0.0\n"
+    "                    self.info.output.brake = 1.0\n"
+    "\n"
+)
+ackermann_clamp = (
+    "            if speed_limit_mps is not None and self.info.current.speed_abs > speed_limit_mps:\n"
+    "                self.info.output.throttle = 0.0\n"
+    "                self.info.output.brake = 1.0\n"
+    "\n"
+)
+if ackermann_clamp not in ackermann_text:
+    if ackermann_previous_clamp in ackermann_text:
+        ackermann_text = ackermann_text.replace(
+            ackermann_previous_clamp,
+            ackermann_clamp,
+            1,
+        )
+    elif ackermann_marker not in ackermann_text:
+        raise RuntimeError("Could not locate carla_ackermann_control output publish block")
+    else:
+        ackermann_text = ackermann_text.replace(
+            ackermann_marker,
+            "            self.update_drive_vehicle_control_command()\n"
+            "\n"
+            + ackermann_clamp
+            + "            # only send out the Carla Control Command if AckermannDrive messages are\n",
+            1,
+        )
+
+if ackermann_text != ackermann_original:
+    ackermann_path.write_text(ackermann_text)
+patches.append({
+    "path": str(ackermann_path),
+    "updated": ackermann_text != ackermann_original,
 })
 
 print(json.dumps({

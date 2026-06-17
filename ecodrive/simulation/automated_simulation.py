@@ -200,6 +200,8 @@ def simulate(
         ego_model_attributes,
         ego_model_parameters,
     )
+    if autoware_speed_limit_kmh is not None:
+        ego_attributes["maxSpeed"] = str(max(0.0, float(autoware_speed_limit_kmh)) / 3.6)
     battery_charge = (
         float(ego_current_battery_charge)
         if ego_current_battery_charge is not None

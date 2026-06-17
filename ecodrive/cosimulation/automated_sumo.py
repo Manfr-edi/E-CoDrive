@@ -61,6 +61,8 @@ BATTERY_TOTAL_CONSUMPTION_KEYS = (
     "device.battery.totalEnergyConsumed",
 )
 MMPEVEM_ACCELERATION_SANITY_LIMIT = 30.0
+AUTOMATED_ACCELERATION_SANITY_LIMIT = 12.0
+AUTOMATED_SPEED_MODE_DIRECT_CONTROL = 0
 
 
 class AutomatedSumoSimulation(SumoSimulation):
@@ -77,6 +79,8 @@ class AutomatedSumoSimulation(SumoSimulation):
         except (TypeError, ValueError):
             self._automated_step_length = 0.05
         self._automated_speed_overrides = set()
+        self._automated_controlled_speeds = {}
+        self._automated_direct_control_vehicles = set()
         super().__init__(*args, **kwargs)
 
     @staticmethod
@@ -106,6 +110,15 @@ class AutomatedSumoSimulation(SumoSimulation):
         """Release a one-tick speed override installed for MMPEVEM stability."""
         if vehicle_id not in self._automated_speed_overrides:
             return
+        try:
+            type_id = traci.vehicle.getTypeID(vehicle_id)
+        except traci.exceptions.TraCIException:
+            type_id = None
+        if AutomatedSumoSimulation._is_automated_battery_vehicle(
+            vehicle_id,
+            type_id=type_id,
+        ):
+            return
 
         try:
             traci.vehicle.setSpeed(vehicle_id, -1)
@@ -132,6 +145,24 @@ class AutomatedSumoSimulation(SumoSimulation):
             float(transform.location.y) - float(previous_y),
         )
         return distance / step_length, previous_speed
+
+    def _enable_direct_control_for_automated_vehicle(self, vehicle_id):
+        """Make the SUMO mirror follow externally imposed CARLA kinematics."""
+        if vehicle_id in self._automated_direct_control_vehicles:
+            return
+
+        try:
+            traci.vehicle.setSpeedMode(
+                vehicle_id,
+                AUTOMATED_SPEED_MODE_DIRECT_CONTROL,
+            )
+            self._automated_direct_control_vehicles.add(vehicle_id)
+        except (AttributeError, traci.exceptions.TraCIException) as error:
+            logging.warning(
+                "Could not enable direct SUMO speed control for %s: %s",
+                vehicle_id,
+                error,
+            )
 
     def _stabilize_mmpevem_speed_after_move(
         self,
@@ -172,6 +203,83 @@ class AutomatedSumoSimulation(SumoSimulation):
                 error,
             )
 
+    def _clamp_automated_speed_after_move(
+        self,
+        vehicle_id,
+        implied_speed,
+        previous_speed,
+    ):
+        """Keep SUMO battery output speed consistent with the current lane and vType cap."""
+        if implied_speed is None or not math.isfinite(implied_speed):
+            return
+
+        try:
+            type_id = traci.vehicle.getTypeID(vehicle_id)
+        except traci.exceptions.TraCIException:
+            return
+        if not AutomatedSumoSimulation._is_automated_battery_vehicle(
+            vehicle_id,
+            type_id=type_id,
+        ):
+            return
+
+        speed_cap = None
+        for getter_name in ("getAllowedSpeed", "getMaxSpeed"):
+            getter = getattr(traci.vehicle, getter_name, None)
+            if getter is None:
+                continue
+            try:
+                value = float(getter(vehicle_id))
+            except (TypeError, ValueError, traci.exceptions.TraCIException):
+                continue
+            if math.isfinite(value) and value >= 0.0:
+                speed_cap = value if speed_cap is None else min(speed_cap, value)
+
+        if speed_cap is None:
+            return
+
+        self._enable_direct_control_for_automated_vehicle(vehicle_id)
+        safe_speed = min(max(0.0, implied_speed), speed_cap)
+        previous_controlled_speed = self._automated_controlled_speeds.get(
+            vehicle_id,
+            previous_speed,
+        )
+        if previous_controlled_speed is None or not math.isfinite(previous_controlled_speed):
+            previous_controlled_speed = safe_speed
+
+        step_length = max(float(self._automated_step_length), 1e-6)
+        acceleration = (safe_speed - previous_controlled_speed) / step_length
+        if not math.isfinite(acceleration):
+            acceleration = 0.0
+        acceleration = max(
+            -AUTOMATED_ACCELERATION_SANITY_LIMIT,
+            min(AUTOMATED_ACCELERATION_SANITY_LIMIT, acceleration),
+        )
+        previous_speed_for_sumo = max(0.0, safe_speed - acceleration * step_length)
+        try:
+            traci.vehicle.setPreviousSpeed(
+                vehicle_id,
+                previous_speed_for_sumo,
+                acceleration,
+            )
+            try:
+                traci.vehicle.setAcceleration(
+                    vehicle_id,
+                    acceleration,
+                    step_length,
+                )
+            except (AttributeError, traci.exceptions.TraCIException):
+                pass
+            traci.vehicle.setSpeed(vehicle_id, safe_speed)
+            self._automated_speed_overrides.add(vehicle_id)
+            self._automated_controlled_speeds[vehicle_id] = safe_speed
+        except (AttributeError, traci.exceptions.TraCIException) as error:
+            logging.warning(
+                "Could not clamp automated SUMO speed for %s after CARLA sync: %s",
+                vehicle_id,
+                error,
+            )
+
     def synchronize_vehicle(self, vehicle_id, transform, signals=None):
         """Synchronize CARLA-controlled vehicles while keeping MMPEVEM finite."""
         self._release_automated_speed_override(vehicle_id)
@@ -183,7 +291,19 @@ class AutomatedSumoSimulation(SumoSimulation):
                 implied_speed,
                 previous_speed,
             )
+            self._clamp_automated_speed_after_move(
+                vehicle_id,
+                implied_speed,
+                previous_speed,
+            )
         return updated
+
+    def destroy_actor(self, actor_id):
+        """Destroy a SUMO actor and forget bridge-control state for it."""
+        self._automated_speed_overrides.discard(actor_id)
+        self._automated_controlled_speeds.pop(actor_id, None)
+        self._automated_direct_control_vehicles.discard(actor_id)
+        return super().destroy_actor(actor_id)
 
     @staticmethod
     def _is_automated_battery_vehicle(veh_id, type_id=None):

@@ -33,6 +33,18 @@ export CARLA_PYTHON_0_9_13=/path/to/python
 ```
 
 L'interprete CARLA deve poter importare almeno `carla`, `flask`, `lxml`, `traci`, `sumolib` e `setuptools`.
+L'interprete principale del progetto può essere diverso: in quel caso configura
+`CARLA_PYTHON_0_9_13` nella shell o nelle variabili d'ambiente della Run Configuration.
+Per esempio, con gli ambienti Conda locali:
+
+```bash
+export CARLA_PYTHON_0_9_13=/home/manfr/anaconda3/envs/ecodrive/bin/python3.8
+python -m ecodrive.simulation.automated_test
+```
+
+Il runner CARLA `0.9.13` incluso usa un'estensione binaria Python 3.7. Un interprete
+più recente può terminare con un segmentation fault anche quando tutte le dipendenze
+elencate sono installate.
 
 ## Uso
 
