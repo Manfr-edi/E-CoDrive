@@ -806,7 +806,7 @@ vehicle_interface_previous_clamp = (
     "            speed_limit_mps = abs(float(speed_limit_kmh)) / 3.6\n"
     "            msg.speed = max(-speed_limit_mps, min(speed_limit_mps, msg.speed))\n"
 )
-vehicle_interface_clamp = (
+vehicle_interface_hard_clamp = (
     "        speed_limit_kmh = rospy.get_param(\"/planning/speed_limit\", None)\n"
     "        if speed_limit_kmh is not None:\n"
     "            speed_limit_mps = abs(float(speed_limit_kmh)) / 3.6\n"
@@ -814,8 +814,22 @@ vehicle_interface_clamp = (
     "            if abs(self.current_speed) > speed_limit_mps:\n"
     "                msg.acceleration = min(msg.acceleration, -1.0)\n"
 )
+vehicle_interface_clamp = (
+    "        speed_limit_kmh = rospy.get_param(\"/planning/speed_limit\", None)\n"
+    "        if speed_limit_kmh is not None:\n"
+    "            speed_limit_mps = abs(float(speed_limit_kmh)) / 3.6\n"
+    "            msg.speed = max(-speed_limit_mps, min(speed_limit_mps, msg.speed))\n"
+    "            if abs(self.current_speed) >= speed_limit_mps * 0.98 and msg.acceleration > 0.0:\n"
+    "                msg.acceleration = 0.0\n"
+)
 if vehicle_interface_clamp not in vehicle_interface_text:
-    if vehicle_interface_previous_clamp in vehicle_interface_text:
+    if vehicle_interface_hard_clamp in vehicle_interface_text:
+        vehicle_interface_text = vehicle_interface_text.replace(
+            vehicle_interface_hard_clamp,
+            vehicle_interface_clamp,
+            1,
+        )
+    elif vehicle_interface_previous_clamp in vehicle_interface_text:
         vehicle_interface_text = vehicle_interface_text.replace(
             vehicle_interface_previous_clamp,
             vehicle_interface_clamp,
@@ -903,7 +917,7 @@ ackermann_precontrol_marker = (
     "        self.control_stop_and_reverse()\n"
     "        self.run_speed_control_loop()\n"
 )
-ackermann_precontrol = (
+ackermann_hard_precontrol = (
     "        self.control_steering()\n"
     "        self.control_stop_and_reverse()\n"
     "        speed_limit_mps = self.get_external_speed_limit_mps()\n"
@@ -917,28 +931,56 @@ ackermann_precontrol = (
     "                self.set_target_accel(0.0)\n"
     "        self.run_speed_control_loop()\n"
 )
+ackermann_precontrol = (
+    "        self.control_steering()\n"
+    "        self.control_stop_and_reverse()\n"
+    "        speed_limit_mps = self.get_external_speed_limit_mps()\n"
+    "        if speed_limit_mps is not None:\n"
+    "            if self.info.target.speed_abs > speed_limit_mps:\n"
+    "                direction = numpy.sign(self.info.target.speed)\n"
+    "                if direction == 0:\n"
+    "                    direction = 1.0\n"
+    "                self.set_target_speed(direction * speed_limit_mps)\n"
+    "            if self.info.current.speed_abs >= speed_limit_mps * 0.98 and self.info.target.accel > 0.0:\n"
+    "                self.set_target_accel(0.0)\n"
+    "        self.run_speed_control_loop()\n"
+)
 if ackermann_precontrol not in ackermann_text:
-    if ackermann_precontrol_marker not in ackermann_text:
+    if ackermann_hard_precontrol in ackermann_text:
+        ackermann_text = ackermann_text.replace(
+            ackermann_hard_precontrol,
+            ackermann_precontrol,
+            1,
+        )
+    elif ackermann_precontrol_marker not in ackermann_text:
         raise RuntimeError("Could not locate carla_ackermann_control control loop start")
-    ackermann_text = ackermann_text.replace(
-        ackermann_precontrol_marker,
-        ackermann_precontrol,
-        1,
-    )
+    else:
+        ackermann_text = ackermann_text.replace(
+            ackermann_precontrol_marker,
+            ackermann_precontrol,
+            1,
+        )
 
 ackermann_pedal_marker = (
     "        self.run_speed_control_loop()\n"
     "        self.run_accel_control_loop()\n"
     "        if not self.info.output.hand_brake:\n"
 )
-ackermann_pedal_override = (
+ackermann_hard_pedal_override = (
     "        self.run_speed_control_loop()\n"
     "        self.run_accel_control_loop()\n"
     "        if speed_limit_mps is not None and self.info.current.speed_abs > speed_limit_mps:\n"
     "            self.info.status.accel_control_pedal_target = -self.info.restrictions.max_pedal\n"
     "        if not self.info.output.hand_brake:\n"
 )
-if ackermann_pedal_override not in ackermann_text:
+ackermann_pedal_override = ackermann_pedal_marker
+if ackermann_hard_pedal_override in ackermann_text:
+    ackermann_text = ackermann_text.replace(
+        ackermann_hard_pedal_override,
+        ackermann_pedal_override,
+        1,
+    )
+elif ackermann_pedal_override not in ackermann_text:
     if ackermann_pedal_marker not in ackermann_text:
         raise RuntimeError("Could not locate carla_ackermann_control accel loop")
     ackermann_text = ackermann_text.replace(
@@ -961,14 +1003,25 @@ ackermann_previous_clamp = (
     "                    self.info.output.brake = 1.0\n"
     "\n"
 )
-ackermann_clamp = (
+ackermann_hard_output_clamp = (
     "            if speed_limit_mps is not None and self.info.current.speed_abs > speed_limit_mps:\n"
     "                self.info.output.throttle = 0.0\n"
     "                self.info.output.brake = 1.0\n"
     "\n"
 )
+ackermann_clamp = (
+    "            if speed_limit_mps is not None and self.info.current.speed_abs > speed_limit_mps:\n"
+    "                self.info.output.throttle = 0.0\n"
+    "\n"
+)
 if ackermann_clamp not in ackermann_text:
-    if ackermann_previous_clamp in ackermann_text:
+    if ackermann_hard_output_clamp in ackermann_text:
+        ackermann_text = ackermann_text.replace(
+            ackermann_hard_output_clamp,
+            ackermann_clamp,
+            1,
+        )
+    elif ackermann_previous_clamp in ackermann_text:
         ackermann_text = ackermann_text.replace(
             ackermann_previous_clamp,
             ackermann_clamp,
@@ -1093,6 +1146,278 @@ print("patched" if text != original_text else "unchanged")
     }
 
 
+def _ensure_autoware_launch_speed_limit_passthrough(container_name):
+    """Ensure start_carla.launch accepts and publishes the automated speed cap."""
+    docker_binary = shutil.which("docker")
+    patch_script = r"""
+import json
+from pathlib import Path
+
+path = Path("/opt/catkin_ws/src/autoware_mini/launch/start_carla.launch")
+text = path.read_text()
+original_text = text
+
+launch_marker = "<launch>\n"
+if launch_marker not in text:
+    raise RuntimeError("Could not locate start_carla.launch root element")
+
+insert_lines = []
+if 'name="max_speed"' not in text and "name='max_speed'" not in text:
+    insert_lines.append(
+        '    <arg name="max_speed"              default="50"                             doc="Maximum ego speed in km/h"/>\n'
+    )
+if 'name="/planning/speed_limit"' not in text and "name='/planning/speed_limit'" not in text:
+    insert_lines.append('    <param name="/planning/speed_limit" value="$(arg max_speed)" />\n')
+if 'name="/speed_limit"' not in text and "name='/speed_limit'" not in text:
+    insert_lines.append('    <param name="/speed_limit" value="$(arg max_speed)" />\n')
+
+if insert_lines:
+    text = text.replace(launch_marker, launch_marker + "".join(insert_lines) + "\n", 1)
+
+if text != original_text:
+    path.write_text(text)
+
+print(json.dumps({
+    "launch_file": str(path),
+    "updated": text != original_text,
+    "max_speed_arg": 'name="max_speed"' in text or "name='max_speed'" in text,
+    "planning_speed_limit_param": 'name="/planning/speed_limit"' in text or "name='/planning/speed_limit'" in text,
+    "global_speed_limit_param": 'name="/speed_limit"' in text or "name='/speed_limit'" in text,
+}))
+""".strip()
+    process = subprocess.run(
+        [
+            docker_binary,
+            "exec",
+            str(container_name),
+            "python3",
+            "-c",
+            patch_script,
+        ],
+        env=_docker_exec_env(),
+        capture_output=True,
+        text=True,
+    )
+    if process.returncode != 0:
+        details = " | ".join(
+            part
+            for part in (process.stderr.strip(), process.stdout.strip())
+            if part
+        )
+        raise RuntimeError(
+            "Could not patch Autoware start_carla.launch to accept max_speed: "
+            f"{details or 'unknown error'}"
+        )
+
+    try:
+        return json.loads(process.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "Autoware launch speed-limit setup completed but returned an invalid payload."
+        ) from exc
+
+
+def _ensure_autoware_speed_display_uses_mps(container_name):
+    """Ensure Autoware dashboard/webapp speed values are displayed in m/s."""
+    docker_binary = shutil.which("docker")
+    patch_script = r"""
+import json
+from pathlib import Path
+
+patches = []
+
+dashboard_path = Path("/opt/catkin_ws/src/autoware_mini/launch/dashboard.launch")
+dashboard_text = dashboard_path.read_text()
+dashboard_original = dashboard_text
+dashboard_replacements = {
+    "m.twist.linear.x * 3.6": "m.twist.linear.x",
+    "m.ctrl_cmd.linear_velocity * 3.6": "m.ctrl_cmd.linear_velocity",
+    "m.closest_object_velocity * 3.6": "m.closest_object_velocity",
+}
+for old, new in dashboard_replacements.items():
+    dashboard_text = dashboard_text.replace(old, new)
+if dashboard_text != dashboard_original:
+    dashboard_path.write_text(dashboard_text)
+patches.append({
+    "path": str(dashboard_path),
+    "updated": dashboard_text != dashboard_original,
+})
+
+webapp_path = Path("/opt/catkin_ws/src/autoware_mini/nodes/platform/webapp/webapp_bridge.py")
+webapp_text = webapp_path.read_text()
+webapp_original = webapp_text
+webapp_text = webapp_text.replace(
+    "speed = round(self.current_velocity.twist.linear.x * 3.6, 2)  # Convert m/s to km/h and round to 2 decimal places",
+    "speed = round(self.current_velocity.twist.linear.x, 2)  # Speed is already in m/s",
+)
+if webapp_text != webapp_original:
+    webapp_path.write_text(webapp_text)
+patches.append({
+    "path": str(webapp_path),
+    "updated": webapp_text != webapp_original,
+})
+
+for path_text in (
+    "/opt/catkin_ws/src/autoware_mini/nodes/planning/visualization/global_path_visualizer.py",
+    "/opt/catkin_ws/src/autoware_mini/nodes/planning/visualization/local_path_visualizer.py",
+):
+    path = Path(path_text)
+    text = path.read_text()
+    original = text
+    text = text.replace(
+        "marker.text = str(round(waypoint.speed * 3.6, 1))",
+        "marker.text = str(round(waypoint.speed, 2))",
+    )
+    if text != original:
+        path.write_text(text)
+    patches.append({
+        "path": str(path),
+        "updated": text != original,
+    })
+
+waypoint_saver_path = Path("/opt/catkin_ws/src/autoware_mini/nodes/planning/global/waypoints/waypoint_saver.py")
+waypoint_saver_text = waypoint_saver_path.read_text()
+waypoint_saver_original = waypoint_saver_text
+waypoint_saver_text = waypoint_saver_text.replace(
+    "marker_label.text = str(round(v * 3.6, 1))",
+    "marker_label.text = str(round(v, 2))",
+)
+if waypoint_saver_text != waypoint_saver_original:
+    waypoint_saver_path.write_text(waypoint_saver_text)
+patches.append({
+    "path": str(waypoint_saver_path),
+    "updated": waypoint_saver_text != waypoint_saver_original,
+})
+
+print(json.dumps({
+    "patches": patches,
+    "updated": any(patch["updated"] for patch in patches),
+    "display_unit": "m/s",
+}))
+""".strip()
+    process = subprocess.run(
+        [
+            docker_binary,
+            "exec",
+            str(container_name),
+            "python3",
+            "-c",
+            patch_script,
+        ],
+        env=_docker_exec_env(),
+        capture_output=True,
+        text=True,
+    )
+    if process.returncode != 0:
+        details = " | ".join(
+            part
+            for part in (process.stderr.strip(), process.stdout.strip())
+            if part
+        )
+        raise RuntimeError(
+            "Could not patch Autoware dashboard speed display units: "
+            f"{details or 'unknown error'}"
+        )
+
+    try:
+        return json.loads(process.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "Autoware dashboard speed-display setup completed but returned an invalid payload."
+        ) from exc
+
+
+def _set_autoware_runtime_speed_limit_in_container(
+    container_name,
+    planner_speed_limit_kmh,
+    ros_timeout_seconds=15,
+):
+    """Set the active ROS speed-limit parameters after Autoware has started."""
+    if planner_speed_limit_kmh is None:
+        return None
+
+    docker_binary = shutil.which("docker")
+    speed_limit_value = float(planner_speed_limit_kmh)
+    setter_script = """
+import json
+import os
+import time
+
+import rospy
+
+
+speed_limit_kmh = float(os.environ["AUTOWARE_RUNTIME_SPEED_LIMIT_KMH"])
+timeout_seconds = float(os.environ.get("AUTOWARE_RUNTIME_SPEED_LIMIT_TIMEOUT_SECONDS", "15"))
+deadline = time.time() + timeout_seconds
+last_error = None
+node_initialized = False
+params = {
+    "/planning/speed_limit": speed_limit_kmh,
+    "/speed_limit": speed_limit_kmh,
+    "/carla_ackermann_control_ego_vehicle/speed_limit": speed_limit_kmh,
+}
+
+while time.time() < deadline:
+    try:
+        if not node_initialized:
+            rospy.init_node("automated_autoware_speed_limit_setter", anonymous=True, disable_signals=True)
+            node_initialized = True
+        for key, value in params.items():
+            rospy.set_param(key, value)
+        observed = {key: rospy.get_param(key, None) for key in params}
+        break
+    except Exception as exc:
+        last_error = str(exc)
+        time.sleep(0.5)
+else:
+    raise RuntimeError(f"Timed out waiting for ROS master while setting speed limit: {last_error}")
+
+print(json.dumps({
+    "speed_limit_kmh": speed_limit_kmh,
+    "params": observed,
+}))
+""".strip()
+    process = subprocess.run(
+        [
+            docker_binary,
+            "exec",
+            "-e",
+            f"AUTOWARE_RUNTIME_SPEED_LIMIT_KMH={speed_limit_value:.3f}",
+            "-e",
+            f"AUTOWARE_RUNTIME_SPEED_LIMIT_TIMEOUT_SECONDS={int(ros_timeout_seconds)}",
+            str(container_name),
+            "bash",
+            "-lc",
+            (
+                "source /root/.bashrc && "
+                "source /opt/ros/noetic/setup.bash && "
+                "source /opt/catkin_ws/devel/setup.bash && "
+                f"python3 -c {shlex.quote(setter_script)}"
+            ),
+        ],
+        env=_docker_exec_env(),
+        capture_output=True,
+        text=True,
+    )
+    if process.returncode != 0:
+        details = " | ".join(
+            part
+            for part in (process.stderr.strip(), process.stdout.strip())
+            if part
+        )
+        raise RuntimeError(
+            "Could not set the runtime Autoware speed limit via ROS 1: "
+            f"{details or 'unknown error'}"
+        )
+
+    try:
+        return json.loads(process.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "Autoware runtime speed-limit setup completed but returned an invalid payload."
+        ) from exc
+
+
 def _publish_autoware_route_in_container(
     container_name,
     initial_pose,
@@ -1166,6 +1491,8 @@ publish_initial_pose = bool(payload.get("publish_initial_pose", True))
 rospy.init_node("automated_autoware_route_publisher", anonymous=True, disable_signals=True)
 if planner_speed_limit_kmh is not None:
     rospy.set_param("/planning/speed_limit", float(planner_speed_limit_kmh))
+    rospy.set_param("/speed_limit", float(planner_speed_limit_kmh))
+    rospy.set_param("/carla_ackermann_control_ego_vehicle/speed_limit", float(planner_speed_limit_kmh))
 rospy.wait_for_message("/carla/ego_vehicle/odometry", Odometry, timeout=timeout_seconds)
 
 goal_publisher = rospy.Publisher("/move_base_simple/goal", PoseStamped, queue_size=1)
@@ -1196,7 +1523,16 @@ print(json.dumps({
     # "initial_xy": [initial_message.pose.pose.position.x, initial_message.pose.pose.position.y],
     "goal_xy": [goal_message.pose.position.x, goal_message.pose.position.y],
     # "initial_pose_published": initial_published,
-    "planner_speed_limit_kmh": planner_speed_limit_kmh
+    "planner_speed_limit_kmh": planner_speed_limit_kmh,
+    "runtime_speed_limit_params": (
+        {
+            "/planning/speed_limit": rospy.get_param("/planning/speed_limit", None),
+            "/speed_limit": rospy.get_param("/speed_limit", None),
+            "/carla_ackermann_control_ego_vehicle/speed_limit": rospy.get_param("/carla_ackermann_control_ego_vehicle/speed_limit", None),
+        }
+        if planner_speed_limit_kmh is not None
+        else None
+    )
 }))
 """.strip()
     process = subprocess.run(
@@ -1456,13 +1792,18 @@ def launch_autoware_carla_in_container(
     docker_binary = shutil.which("docker")
     ensure_autoware_blueprint_available(container_name)
     dynamic_speed_limit_setup = _ensure_autoware_dynamic_speed_limit(container_name)
+    speed_display_setup = _ensure_autoware_speed_display_uses_mps(container_name)
     spawn_point_passthrough = None
     if spawn_point_data is not None:
         spawn_point_passthrough = _ensure_autoware_spawn_point_passthrough(container_name)
     speed_limit_value = None
+    launch_speed_limit_passthrough = None
     planner_speed_limit_setup = None
     if speed_limit_kmh is not None:
         speed_limit_value = float(speed_limit_kmh)
+        launch_speed_limit_passthrough = _ensure_autoware_launch_speed_limit_passthrough(
+            container_name,
+        )
         planner_speed_limit_setup = _configure_autoware_planning_speed_limit_in_container(
             container_name,
             speed_limit_value,
@@ -1482,6 +1823,8 @@ def launch_autoware_carla_in_container(
     )
     if spawn_point_data is not None:
         command += f" spawn_point:={shlex.quote(spawn_point_data['spawn_point'])}"
+    if speed_limit_value is not None:
+        command += f" max_speed:={speed_limit_value:.3f}"
     if carla_bridge_passive:
         command += " passive:=true"
     if route_requested:
@@ -1549,6 +1892,13 @@ def launch_autoware_carla_in_container(
             f"were still running after 3 seconds. Command: {command}"
         )
 
+    runtime_speed_limit_setup = None
+    if speed_limit_value is not None:
+        runtime_speed_limit_setup = _set_autoware_runtime_speed_limit_in_container(
+            container_name,
+            speed_limit_value,
+        )
+
     route_publication = None
     route_publication_error = None
     if route_requested and publish_route:
@@ -1604,6 +1954,9 @@ def launch_autoware_carla_in_container(
             speed_limit_value
         ),
         "planner_speed_limit_setup": planner_speed_limit_setup,
+        "launch_speed_limit_passthrough": launch_speed_limit_passthrough,
+        "runtime_speed_limit_setup": runtime_speed_limit_setup,
+        "speed_display_setup": speed_display_setup,
         "dynamic_speed_limit_setup": dynamic_speed_limit_setup,
         "initial_pose": initial_pose,
         "goal_pose": goal_pose,

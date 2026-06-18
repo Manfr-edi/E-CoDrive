@@ -10,7 +10,7 @@ for iteration in range(20):
     print("Generated :" + str(vehicle_number))
     result = simulate(
         town="Town04", #FIXED (one per case-study)
-        headless=True,
+        headless=False,
         traffic_generation_mode="random" ,
         traffic_congestion_edge="-41.0.00", # Select on the prebuilt list of roads
         traffic_source_edge="-40.0.00",
@@ -19,9 +19,9 @@ for iteration in range(20):
         traffic_spawn_time=0,
         traffic_stop_spawn_time=20,
         traffic_vehicle_type="vehicle.tesla.model3", # Fix one vehicle type
-        ego_starting_delay= 50.0,
-        ego_source_edge="-38.0.00",
-        ego_destination_edge="-41.0.00",
+        ego_starting_delay= 5.0,
+        ego_source_edge="-17.0.00",
+        ego_destination_edge="-26.0.00",
         ego_energy_model="Energy", # Fixing for testing different SUT
         ego_max_battery_capacity=75000,
         ego_current_battery_charge=650,
