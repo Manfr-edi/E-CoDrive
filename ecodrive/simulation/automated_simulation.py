@@ -1153,6 +1153,8 @@ def _start_automated_synchronization(
         str(start_gate_file),
         "--wait-ready-file",
         str(ready_file),
+        "--tls-manager",
+        "none",
         route_tools.relative_to_sumo_dir(Path(sumocfg_file)),
     ]
     if sumo_gui:

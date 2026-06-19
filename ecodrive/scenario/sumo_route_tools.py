@@ -3339,6 +3339,7 @@ def _write_sumocfg(map_name, route_file, sumocfg_file, simulation_end=None):
 
     processing = ET.SubElement(root, "processing")
     ET.SubElement(processing, "time-to-teleport", {"value": "-1"})
+    ET.SubElement(processing, "tls.all-off", {"value": "true"})
 
     gui_only = ET.SubElement(root, "gui_only")
     ET.SubElement(gui_only, "gui-settings-file", {"value": "viewsettings.xml"})
@@ -3607,6 +3608,8 @@ def build_run_command(sumocfg_file, sumo_gui=True, wait_start_file=None):
         str(PROJECT_ROOT / "ecodrive" / "cosimulation" / "run_automated_synchronization.py"),
         "--carla-version",
         active_carla_version(),
+        "--tls-manager",
+        "none",
         relative_to_sumo_dir(sumocfg_file),
     ]
     if sumo_gui:
