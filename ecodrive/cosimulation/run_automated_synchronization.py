@@ -169,6 +169,8 @@ def synchronization_loop(args):
             args.step_length,
         )
         logging.info("CARLA client connected.")
+        carla_simulation.switch_off_traffic_lights()
+        logging.info("CARLA traffic lights forced to green and frozen.")
 
         if args.wait_start_file:
             release_carla_synchronous_mode(carla_simulation)

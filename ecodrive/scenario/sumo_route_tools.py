@@ -1327,6 +1327,84 @@ print(json.dumps({
         ) from exc
 
 
+def _ensure_autoware_traffic_lights_disabled(container_name):
+    """Disable CARLA traffic-light perception and stopline handling in Autoware."""
+    docker_binary = shutil.which("docker")
+    patch_script = r"""
+import json
+from pathlib import Path
+
+patches = []
+
+start_carla_path = Path("/opt/catkin_ws/src/autoware_mini/launch/start_carla.launch")
+start_carla_text = start_carla_path.read_text()
+start_carla_original = start_carla_text
+start_carla_replacements = {
+    '<arg name="tfl_detector"            default="carla"': '<arg name="tfl_detector"            default="none"',
+    '<arg name="enable_traffic_light_checker" default="true"': '<arg name="enable_traffic_light_checker" default="false"',
+}
+for old, new in start_carla_replacements.items():
+    start_carla_text = start_carla_text.replace(old, new)
+if start_carla_text != start_carla_original:
+    start_carla_path.write_text(start_carla_text)
+patches.append({
+    "path": str(start_carla_path),
+    "updated": start_carla_text != start_carla_original,
+})
+
+planning_path = Path("/opt/catkin_ws/src/autoware_mini/launch/planning.launch")
+planning_text = planning_path.read_text()
+planning_original = planning_text
+planning_text = planning_text.replace(
+    '<arg name="enable_traffic_light_checker" default="true" />',
+    '<arg name="enable_traffic_light_checker" default="false" />',
+)
+if planning_text != planning_original:
+    planning_path.write_text(planning_text)
+patches.append({
+    "path": str(planning_path),
+    "updated": planning_text != planning_original,
+})
+
+print(json.dumps({
+    "patches": patches,
+    "updated": any(patch["updated"] for patch in patches),
+    "tfl_detector": "none",
+    "enable_traffic_light_checker": False,
+}))
+""".strip()
+    process = subprocess.run(
+        [
+            docker_binary,
+            "exec",
+            str(container_name),
+            "python3",
+            "-c",
+            patch_script,
+        ],
+        env=_docker_exec_env(),
+        capture_output=True,
+        text=True,
+    )
+    if process.returncode != 0:
+        details = " | ".join(
+            part
+            for part in (process.stderr.strip(), process.stdout.strip())
+            if part
+        )
+        raise RuntimeError(
+            "Could not patch Autoware traffic-light handling: "
+            f"{details or 'unknown error'}"
+        )
+
+    try:
+        return json.loads(process.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "Autoware traffic-light setup completed but returned an invalid payload."
+        ) from exc
+
+
 def _set_autoware_runtime_speed_limit_in_container(
     container_name,
     planner_speed_limit_kmh,
@@ -1793,6 +1871,7 @@ def launch_autoware_carla_in_container(
     ensure_autoware_blueprint_available(container_name)
     dynamic_speed_limit_setup = _ensure_autoware_dynamic_speed_limit(container_name)
     speed_display_setup = _ensure_autoware_speed_display_uses_mps(container_name)
+    traffic_light_setup = _ensure_autoware_traffic_lights_disabled(container_name)
     spawn_point_passthrough = None
     if spawn_point_data is not None:
         spawn_point_passthrough = _ensure_autoware_spawn_point_passthrough(container_name)
@@ -1825,6 +1904,7 @@ def launch_autoware_carla_in_container(
         command += f" spawn_point:={shlex.quote(spawn_point_data['spawn_point'])}"
     if speed_limit_value is not None:
         command += f" max_speed:={speed_limit_value:.3f}"
+    command += " tfl_detector:=none enable_traffic_light_checker:=false"
     if carla_bridge_passive:
         command += " passive:=true"
     if route_requested:
@@ -1957,6 +2037,7 @@ def launch_autoware_carla_in_container(
         "launch_speed_limit_passthrough": launch_speed_limit_passthrough,
         "runtime_speed_limit_setup": runtime_speed_limit_setup,
         "speed_display_setup": speed_display_setup,
+        "traffic_light_setup": traffic_light_setup,
         "dynamic_speed_limit_setup": dynamic_speed_limit_setup,
         "initial_pose": initial_pose,
         "goal_pose": goal_pose,
