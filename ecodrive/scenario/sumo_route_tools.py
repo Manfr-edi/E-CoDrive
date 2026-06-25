@@ -1405,6 +1405,212 @@ print(json.dumps({
         ) from exc
 
 
+def _ensure_autoware_yellow_as_yield(container_name):
+    """Patch Autoware Mini so yellow traffic lights behave as yield lines."""
+    docker_binary = shutil.which("docker")
+    patch_script = r"""
+import json
+from pathlib import Path
+
+rule_checker_path = Path("/opt/catkin_ws/src/autoware_mini/nodes/planning/local/rule/traffic_light_stopline_checker.py")
+legacy_planner_path = Path("/opt/catkin_ws/src/autoware_mini/nodes/planning/local/velocity_local_planner.py")
+
+if rule_checker_path.exists():
+    path = rule_checker_path
+    text = path.read_text()
+    original = text
+
+    old_init = "        self.stopline_statuses = {}\n"
+    new_init = (
+        "        self.stopline_statuses = {}\n"
+        "        self.stopline_status_strings = {}\n"
+    )
+    if new_init not in text:
+        if old_init not in text:
+            raise RuntimeError("Could not locate rule stopline status initialization")
+        text = text.replace(old_init, new_init, 1)
+
+    old_callback = (
+        "        stopline_statuses = {}\n"
+        "        for result in msg.results:\n"
+        "            stopline_statuses[result.stopline_id] = result.recognition_result\n"
+        "\n"
+        "        self.stopline_statuses = stopline_statuses\n"
+    )
+    old_callback_with_spaces = (
+        "        stopline_statuses = {}\n"
+        "        for result in msg.results:\n"
+        "            stopline_statuses[result.stopline_id] = result.recognition_result\n"
+        "        \n"
+        "        self.stopline_statuses = stopline_statuses\n"
+    )
+    new_callback = (
+        "        stopline_statuses = {}\n"
+        "        stopline_status_strings = {}\n"
+        "        for result in msg.results:\n"
+        "            stopline_statuses[result.stopline_id] = result.recognition_result\n"
+        "            stopline_status_strings[result.stopline_id] = getattr(result, \"recognition_result_str\", \"\")\n"
+        "\n"
+        "        self.stopline_statuses = stopline_statuses\n"
+        "        self.stopline_status_strings = stopline_status_strings\n"
+    )
+    if new_callback not in text:
+        if old_callback in text:
+            text = text.replace(old_callback, new_callback, 1)
+        elif old_callback_with_spaces in text:
+            text = text.replace(old_callback_with_spaces, new_callback, 1)
+        else:
+            raise RuntimeError("Could not locate rule traffic_light_status_callback body")
+
+    old_snapshot = "        stopline_statuses = self.stopline_statuses\n"
+    new_snapshot = (
+        "        stopline_statuses = self.stopline_statuses\n"
+        "        stopline_status_strings = getattr(self, \"stopline_status_strings\", {})\n"
+    )
+    if new_snapshot not in text:
+        if old_snapshot not in text:
+            raise RuntimeError("Could not locate rule stopline status snapshot")
+        text = text.replace(old_snapshot, new_snapshot, 1)
+
+    old_condition = (
+        "            if stopline_id in stopline_statuses and stopline_statuses[stopline_id] == 0 and stopline_linestring.intersects(local_path.linestring):\n"
+    )
+    new_condition = (
+        "            stopline_status = stopline_statuses.get(stopline_id)\n"
+        "            stopline_status_str = str(stopline_status_strings.get(stopline_id, \"\")).upper()\n"
+        "            stopline_is_red = stopline_status == 0 and \"YELLOW\" not in stopline_status_str\n"
+        "            stopline_is_yield = stopline_status == 0 and \"YELLOW\" in stopline_status_str\n"
+        "            if stopline_id in stopline_statuses and stopline_is_red and stopline_linestring.intersects(local_path.linestring):\n"
+    )
+    if new_condition not in text:
+        if old_condition not in text:
+            raise RuntimeError("Could not locate rule traffic-light stopline condition")
+        text = text.replace(old_condition, new_condition, 1)
+
+    if text != original:
+        path.write_text(text)
+
+    print(json.dumps({
+        "path": str(path),
+        "updated": text != original,
+        "mode": "yellow_as_yield",
+        "strategy": "rule_traffic_light_stopline_checker",
+    }))
+    raise SystemExit(0)
+
+if not legacy_planner_path.exists():
+    raise RuntimeError(
+        "Could not locate a supported Autoware traffic-light stopline checker. "
+        f"Checked: {rule_checker_path}, {legacy_planner_path}"
+    )
+
+path = legacy_planner_path
+text = path.read_text()
+original = text
+
+old_init = "        self.stopline_statuses = {}\n"
+new_init = (
+    "        self.stopline_statuses = {}\n"
+    "        self.stopline_status_strings = {}\n"
+)
+if new_init not in text:
+    if old_init not in text:
+        raise RuntimeError("Could not locate stopline status initialization")
+    text = text.replace(old_init, new_init, 1)
+
+old_callback = (
+    "        stopline_statuses = {}\n"
+    "        for result in msg.results:\n"
+    "            stopline_statuses[result.lane_id] = result.recognition_result\n"
+    "        \n"
+    "        self.stopline_statuses = stopline_statuses\n"
+)
+new_callback = (
+    "        stopline_statuses = {}\n"
+    "        stopline_status_strings = {}\n"
+    "        for result in msg.results:\n"
+    "            stopline_statuses[result.lane_id] = result.recognition_result\n"
+    "            stopline_status_strings[result.lane_id] = result.recognition_result_str\n"
+    "        \n"
+    "        self.stopline_statuses = stopline_statuses\n"
+    "        self.stopline_status_strings = stopline_status_strings\n"
+)
+if new_callback not in text:
+    if old_callback not in text:
+        raise RuntimeError("Could not locate traffic_light_status_callback body")
+    text = text.replace(old_callback, new_callback, 1)
+
+old_snapshot = "        stopline_statuses = self.stopline_statuses\n"
+new_snapshot = (
+    "        stopline_statuses = self.stopline_statuses\n"
+    "        stopline_status_strings = getattr(self, \"stopline_status_strings\", {})\n"
+)
+if new_snapshot not in text:
+    if old_snapshot not in text:
+        raise RuntimeError("Could not locate stopline status snapshot")
+    text = text.replace(old_snapshot, new_snapshot, 1)
+
+old_condition = (
+    "            if stopline_id in stopline_statuses and stopline_statuses[stopline_id] == 0 and stopline_linestring.intersects(local_path.linestring):\n"
+)
+new_condition = (
+    "            stopline_status = stopline_statuses.get(stopline_id)\n"
+    "            stopline_status_str = str(stopline_status_strings.get(stopline_id, \"\")).upper()\n"
+    "            stopline_is_red = stopline_status == 0 and \"YELLOW\" not in stopline_status_str\n"
+    "            stopline_is_yield = stopline_status == 0 and \"YELLOW\" in stopline_status_str\n"
+    "            conflicting_object_ahead = any(\n"
+    "                distance >= ego_distance_from_local_path_start\n"
+    "                for distance in object_distances\n"
+    "            )\n"
+    "            if stopline_id in stopline_statuses and (stopline_is_red or (stopline_is_yield and conflicting_object_ahead)) and stopline_linestring.intersects(local_path.linestring):\n"
+)
+if new_condition not in text:
+    if old_condition not in text:
+        raise RuntimeError("Could not locate traffic-light stopline condition")
+    text = text.replace(old_condition, new_condition, 1)
+
+if text != original:
+    path.write_text(text)
+
+print(json.dumps({
+    "path": str(path),
+    "updated": text != original,
+    "mode": "yellow_as_yield",
+    "strategy": "legacy_velocity_local_planner",
+}))
+""".strip()
+    process = subprocess.run(
+        [
+            docker_binary,
+            "exec",
+            str(container_name),
+            "python3",
+            "-c",
+            patch_script,
+        ],
+        env=_docker_exec_env(),
+        capture_output=True,
+        text=True,
+    )
+    if process.returncode != 0:
+        details = " | ".join(
+            part
+            for part in (process.stderr.strip(), process.stdout.strip())
+            if part
+        )
+        raise RuntimeError(
+            "Could not patch Autoware yellow-as-yield handling: "
+            f"{details or 'unknown error'}"
+        )
+
+    try:
+        return json.loads(process.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "Autoware yellow-as-yield setup completed but returned an invalid payload."
+        ) from exc
+
+
 def _set_autoware_runtime_speed_limit_in_container(
     container_name,
     planner_speed_limit_kmh,
@@ -1822,6 +2028,8 @@ def launch_autoware_carla_in_container(
     headless=False,
     carla_bridge_passive=False,
     publish_route=True,
+    disable_traffic_light_handling=True,
+    traffic_light_handling_mode=None,
 ):
     """Launch Autoware against the selected CARLA map inside Docker."""
     map_name = str(map_name).strip()
@@ -1871,7 +2079,21 @@ def launch_autoware_carla_in_container(
     ensure_autoware_blueprint_available(container_name)
     dynamic_speed_limit_setup = _ensure_autoware_dynamic_speed_limit(container_name)
     speed_display_setup = _ensure_autoware_speed_display_uses_mps(container_name)
-    traffic_light_setup = _ensure_autoware_traffic_lights_disabled(container_name)
+    traffic_light_mode = str(
+        traffic_light_handling_mode
+        or ("disabled" if disable_traffic_light_handling else "normal")
+    ).strip().lower()
+    if traffic_light_mode == "disabled":
+        traffic_light_setup = _ensure_autoware_traffic_lights_disabled(container_name)
+    elif traffic_light_mode == "yellow_as_yield":
+        traffic_light_setup = _ensure_autoware_yellow_as_yield(container_name)
+    else:
+        traffic_light_setup = {
+            "updated": False,
+            "tfl_detector": "carla",
+            "enable_traffic_light_checker": True,
+            "mode": "normal",
+        }
     spawn_point_passthrough = None
     if spawn_point_data is not None:
         spawn_point_passthrough = _ensure_autoware_spawn_point_passthrough(container_name)
@@ -1904,7 +2126,10 @@ def launch_autoware_carla_in_container(
         command += f" spawn_point:={shlex.quote(spawn_point_data['spawn_point'])}"
     if speed_limit_value is not None:
         command += f" max_speed:={speed_limit_value:.3f}"
-    command += " tfl_detector:=none enable_traffic_light_checker:=false"
+    if traffic_light_mode == "disabled":
+        command += " tfl_detector:=none enable_traffic_light_checker:=false"
+    else:
+        command += " tfl_detector:=carla enable_traffic_light_checker:=true"
     if carla_bridge_passive:
         command += " passive:=true"
     if route_requested:
@@ -3248,10 +3473,12 @@ def _write_congestion_trips(
     vehicle_type=DEFAULT_VEHICLE_TYPE,
     random_vehicle_type=False,
     vehicle_types=None,
+    vehicle_type_seed=None,
     candidate_count=None,
 ):
     """Write the trip file for a congestion-driven scenario."""
     rng = random.Random(seed)
+    vehicle_type_rng = random.Random(seed if vehicle_type_seed is None else vehicle_type_seed)
     if candidate_count is None:
         candidate_count = max(vehicle_count * 4, vehicle_count + 20)
     departures = _depart_times(candidate_count, begin, end, spawn_pattern, rng)
@@ -3275,7 +3502,7 @@ def _write_congestion_trips(
             [edge_id for edge_id in destination_pool if edge_id != origin] or destination_pool
         )
         trip_vehicle_type = _vehicle_type_for_trip(
-            rng,
+            vehicle_type_rng,
             vehicle_type,
             random_vehicle_type,
             vehicle_types,
@@ -3455,6 +3682,7 @@ def generate_congestion_scenario(
     vehicle_type=DEFAULT_VEHICLE_TYPE,
     random_vehicle_type=False,
     vehicle_types=None,
+    vehicle_type_seed=None,
 ):
     """Generate a congestion-focused SUMO scenario and its artifacts."""
     vehicle_count = int(vehicle_count)
@@ -3526,6 +3754,7 @@ def generate_congestion_scenario(
             vehicle_type=vehicle_type,
             random_vehicle_type=random_vehicle_type,
             vehicle_types=vehicle_types,
+            vehicle_type_seed=vehicle_type_seed,
             candidate_count=candidate_count,
         )
 
@@ -3584,6 +3813,7 @@ def generate_random_trips_scenario(
     vehicle_type=DEFAULT_VEHICLE_TYPE,
     random_vehicle_type=False,
     vehicle_types=None,
+    vehicle_type_seed=None,
 ):
     """Generate a random-traffic SUMO scenario and its artifacts."""
     vehicle_count = int(vehicle_count)
@@ -3658,7 +3888,8 @@ def generate_random_trips_scenario(
         generated_count, _ = _count_route_vehicles(route_file)
 
     if random_vehicle_type:
-        _assign_random_vehicle_types(route_file, int(seed), vehicle_types)
+        type_seed = int(seed) if vehicle_type_seed is None else int(vehicle_type_seed)
+        _assign_random_vehicle_types(route_file, type_seed, vehicle_types)
 
     _write_sumocfg(map_name, route_file, sumocfg_file, simulation_end=simulation_end)
 

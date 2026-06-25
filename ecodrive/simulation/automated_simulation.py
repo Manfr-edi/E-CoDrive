@@ -104,6 +104,9 @@ def simulate(
     *,
     headless: bool = True,
     town: str,
+    traffic_light_handling_mode: Optional[str] = None,
+    force_carla_traffic_lights_green: bool = True,
+    disable_autoware_traffic_light_handling: bool = True,
     traffic_congestion_edge: Optional[str] = None,
     traffic_source_edge: Optional[str] = None,
     traffic_destination_edge: Optional[str] = None,
@@ -112,6 +115,7 @@ def simulate(
     traffic_stop_spawn_time: float = 120.0,
     traffic_vehicle_type: Optional[str] = None,
     traffic_random_vehicle_type: bool = False,
+    traffic_random_vehicle_cars_only: bool = False,
     traffic_generation_mode: str = "congestion",
     ego_starting_delay: float = 0.0,
     ego_source_edge: str,
@@ -124,6 +128,7 @@ def simulate(
     ego_critical_battery_threshold: float = 0.0,
     simulation_end: Optional[float] = None,
     traffic_seed: int = 42,
+    traffic_vehicle_type_seed: Optional[int] = None,
     traffic_spawn_pattern: str = "Equidistant",
     autoware_startup_wait: float = DEFAULT_AUTOWARE_STARTUP_WAIT,
     autoware_speed_limit_kmh: Optional[float] = DEFAULT_AUTOWARE_SPEED_LIMIT_KMH,
@@ -186,6 +191,11 @@ def simulate(
         ego_critical_battery_threshold,
     )
     progress_log.log("inputs", "Town, edge and battery inputs validated.")
+    resolved_traffic_light_mode = _normalize_traffic_light_handling_mode(
+        traffic_light_handling_mode,
+        force_carla_traffic_lights_green=force_carla_traffic_lights_green,
+        disable_autoware_traffic_light_handling=disable_autoware_traffic_light_handling,
+    )
 
     if cleanup_existing:
         progress_log.log("cleanup", "Stopping previous CARLA, sync and Autoware runtime state.")
@@ -231,10 +241,21 @@ def simulate(
         traffic_vehicle_type,
         traffic_random_vehicle_type,
     )
+    if random_vehicle_type and traffic_random_vehicle_cars_only:
+        vehicle_types = _filter_vehicle_types_by_vclass(vehicle_types, {"passenger"})
+        progress_log.log(
+            "traffic",
+            f"Filtered random vehicle pool to {len(vehicle_types)} passenger car types.",
+        )
     selected_vehicle_type = (
         route_tools.DEFAULT_VEHICLE_TYPE
         if random_vehicle_type or not traffic_vehicle_type
         else str(traffic_vehicle_type)
+    )
+    resolved_vehicle_type_seed = (
+        int(traffic_seed)
+        if traffic_vehicle_type_seed is None
+        else int(traffic_vehicle_type_seed)
     )
     resolved_simulation_end = _simulation_end(
         traffic_stop_spawn_time,
@@ -252,6 +273,7 @@ def simulate(
         simulation_end=resolved_simulation_end,
         spawn_pattern=traffic_spawn_pattern,
         seed=int(traffic_seed),
+        vehicle_type_seed=resolved_vehicle_type_seed,
         vehicle_type=selected_vehicle_type,
         random_vehicle_type=random_vehicle_type,
         vehicle_types=vehicle_types,
@@ -303,6 +325,7 @@ def simulate(
                 carla_timeout=float(carla_timeout),
                 sumo_gui=not headless,
                 output_dir=output_dir,
+                traffic_light_handling_mode=resolved_traffic_light_mode,
                 progress_log=progress_log,
             )
             _wait_for_sync_ready(sync_launch, timeout=float(carla_timeout))
@@ -324,6 +347,7 @@ def simulate(
                 speed_limit_kmh=autoware_speed_limit_kmh,
                 carla_bridge_passive=False,
                 publish_route=False,
+                traffic_light_handling_mode=resolved_traffic_light_mode,
             )
             autoware_container = autoware_launch.get("container_name")
             progress_log.log(
@@ -455,8 +479,17 @@ def simulate(
             "spawn_time": float(traffic_spawn_time),
             "stop_spawn_time": float(traffic_stop_spawn_time),
             "vehicle_type": "random" if random_vehicle_type else selected_vehicle_type,
+            "random_vehicle_type": random_vehicle_type,
+            "random_vehicle_cars_only": bool(
+                random_vehicle_type and traffic_random_vehicle_cars_only
+            ),
+            "random_vehicle_type_count": len(vehicle_types) if random_vehicle_type else None,
             "seed": int(traffic_seed),
+            "vehicle_type_seed": resolved_vehicle_type_seed,
             "scenario_mode": scenario.mode,
+            "traffic_light_handling_mode": resolved_traffic_light_mode,
+            "force_carla_traffic_lights_green": resolved_traffic_light_mode == "disabled",
+            "disable_autoware_traffic_light_handling": resolved_traffic_light_mode == "disabled",
         },
         ego={
             "source_edge": ego_source_edge,
@@ -645,6 +678,49 @@ def _as_random_vehicle_type(
     return bool(random_vehicle_type) or str(vehicle_type or "").strip().lower() == "random"
 
 
+def _normalize_traffic_light_handling_mode(
+    mode: Optional[str],
+    *,
+    force_carla_traffic_lights_green: bool,
+    disable_autoware_traffic_light_handling: bool,
+) -> str:
+    value = str(mode or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if value in {"disabled", "off", "force_green", "green", "none"}:
+        return "disabled"
+    if value in {"normal", "active", "carla"}:
+        return "normal"
+    if value in {"yellow_as_yield", "yellow_yield", "flashing_yellow", "yellow_flash"}:
+        return "yellow_as_yield"
+    if value:
+        raise ValueError(
+            "traffic_light_handling_mode must be one of: disabled, normal, "
+            "yellow_as_yield."
+        )
+    if force_carla_traffic_lights_green or disable_autoware_traffic_light_handling:
+        return "disabled"
+    return "normal"
+
+
+def _filter_vehicle_types_by_vclass(
+    vehicle_types: Sequence[str],
+    allowed_vclasses: set[str],
+) -> Sequence[str]:
+    specs = route_tools.carla_vehicle_type_specs()
+    allowed = {str(value).strip().lower() for value in allowed_vclasses}
+    filtered = [
+        vehicle_type
+        for vehicle_type in vehicle_types
+        if str(specs.get(vehicle_type, {}).get("vClass", "")).strip().lower()
+        in allowed
+    ]
+    if not filtered:
+        raise ValueError(
+            "traffic_random_vehicle_cars_only=True did not match any passenger "
+            "vehicle type in the active CARLA/SUMO vType configuration."
+        )
+    return filtered
+
+
 def _normalize_traffic_generation_mode(mode: str) -> str:
     value = str(mode or "").strip().lower().replace("-", "_").replace(" ", "_")
     if value in {"", "congestion", "congestion_edge", "manual", "via_edge"}:
@@ -700,6 +776,7 @@ def _generate_traffic_scenario(
     simulation_end: float,
     spawn_pattern: str,
     seed: int,
+    vehicle_type_seed: int,
     vehicle_type: str,
     random_vehicle_type: bool,
     vehicle_types: Sequence[str],
@@ -712,6 +789,7 @@ def _generate_traffic_scenario(
             end=stop_spawn_time,
             simulation_end=simulation_end,
             seed=seed,
+            vehicle_type_seed=vehicle_type_seed,
             vehicle_type=vehicle_type,
             random_vehicle_type=random_vehicle_type,
             vehicle_types=vehicle_types,
@@ -741,6 +819,7 @@ def _generate_traffic_scenario(
         spawn_pattern=spawn_pattern,
         source_edge=effective_source_edge,
         seed=seed,
+        vehicle_type_seed=vehicle_type_seed,
         vehicle_type=vehicle_type,
         random_vehicle_type=random_vehicle_type,
         vehicle_types=vehicle_types,
@@ -1123,6 +1202,7 @@ def _start_automated_synchronization(
     carla_timeout: float,
     sumo_gui: bool,
     output_dir: Path,
+    traffic_light_handling_mode: str,
     progress_log: Optional[_ProgressLogger] = None,
 ) -> AutomatedSynchronizationLaunch:
     """Start the automated-only synchronization runner in gated mode."""
@@ -1157,6 +1237,10 @@ def _start_automated_synchronization(
         "none",
         route_tools.relative_to_sumo_dir(Path(sumocfg_file)),
     ]
+    if traffic_light_handling_mode == "disabled":
+        command.append("--force-traffic-lights-green")
+    elif traffic_light_handling_mode == "yellow_as_yield":
+        command.append("--force-traffic-lights-yellow")
     if sumo_gui:
         command.append("--sumo-gui")
 

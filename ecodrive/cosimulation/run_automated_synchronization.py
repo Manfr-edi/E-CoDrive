@@ -83,6 +83,14 @@ def release_carla_synchronous_mode(carla_simulation):
     carla_simulation.client.get_trafficmanager().set_synchronous_mode(False)
 
 
+def force_carla_traffic_lights_state(carla_simulation, state):
+    """Freeze all CARLA traffic lights in the requested state."""
+    for actor in carla_simulation.world.get_actors():
+        if actor.type_id == "traffic.traffic_light":
+            actor.freeze(True)
+            actor.set_state(state)
+
+
 def make_long_wait_carla_simulation(base_class, carla_module, client_timeout):
     """Return a CarlaSimulation variant with a longer CARLA RPC timeout."""
 
@@ -169,8 +177,14 @@ def synchronization_loop(args):
             args.step_length,
         )
         logging.info("CARLA client connected.")
-        carla_simulation.switch_off_traffic_lights()
-        logging.info("CARLA traffic lights forced to green and frozen.")
+        if args.force_traffic_lights_green:
+            carla_simulation.switch_off_traffic_lights()
+            logging.info("CARLA traffic lights forced to green and frozen.")
+        elif args.force_traffic_lights_yellow:
+            force_carla_traffic_lights_state(carla_simulation, carla.TrafficLightState.Yellow)
+            logging.info("CARLA traffic lights forced to yellow and frozen.")
+        else:
+            logging.info("CARLA traffic lights left active.")
 
         if args.wait_start_file:
             release_carla_synchronous_mode(carla_simulation)
@@ -276,6 +290,16 @@ def build_argparser():
     argparser.add_argument("--sync-vehicle-color", action="store_true")
     argparser.add_argument("--sync-vehicle-all", action="store_true")
     argparser.add_argument(
+        "--force-traffic-lights-green",
+        action="store_true",
+        help="Force CARLA traffic lights to green and freeze them.",
+    )
+    argparser.add_argument(
+        "--force-traffic-lights-yellow",
+        action="store_true",
+        help="Force CARLA traffic lights to yellow and freeze them.",
+    )
+    argparser.add_argument(
         "--tls-manager",
         type=str,
         choices=["none", "sumo", "carla"],
@@ -298,6 +322,10 @@ if __name__ == "__main__":
     if arguments.sync_vehicle_all is True:
         arguments.sync_vehicle_lights = True
         arguments.sync_vehicle_color = True
+    if arguments.force_traffic_lights_green and arguments.force_traffic_lights_yellow:
+        raise ValueError(
+            "--force-traffic-lights-green and --force-traffic-lights-yellow are mutually exclusive."
+        )
 
     if arguments.debug:
         logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.DEBUG)
