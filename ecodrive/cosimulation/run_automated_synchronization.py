@@ -80,7 +80,10 @@ def release_carla_synchronous_mode(carla_simulation):
         settings.synchronous_mode = False
         settings.fixed_delta_seconds = None
         carla_simulation.world.apply_settings(settings)
-    carla_simulation.client.get_trafficmanager().set_synchronous_mode(False)
+    try:
+        carla_simulation.client.get_trafficmanager().set_synchronous_mode(False)
+    except RuntimeError as error:
+        logging.warning("Could not release CARLA Traffic Manager synchronous mode: %s", error)
 
 
 def force_carla_traffic_lights_state(carla_simulation, state):
