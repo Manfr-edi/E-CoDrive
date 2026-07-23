@@ -1,28 +1,33 @@
-from random import randrange
+from pathlib import Path
 
 from ecodrive.simulation.automated_simulation import simulate
 
 
-# Example of run with spatial random spawning traffic that congestion a specific road
-for iteration in range(20):
-    print("Iteration no:" + str(iteration))
-    vehicle_number = randrange(1, 10, 1)
-    print("Generated :" + str(vehicle_number))
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+BOLOGNA_ROUTES = (
+    PROJECT_ROOT
+    / "carla"
+    / "CARLA_0.9.13"
+    / "Co-Simulation"
+    / "Sumo"
+    / "examples"
+    / "rou"
+    / "bologna.rou.xml"
+)
+
+
+if __name__ == "__main__":
     result = simulate(
-        town="Town04", #FIXED (one per case-study)
+        town="bologna",
         headless=False,
-        traffic_generation_mode="random" ,
-        traffic_congestion_edge="-41.0.00", # Select on the prebuilt list of roads
-        traffic_source_edge="-40.0.00",
-        traffic_destination_edge="-22.0.00",
-        traffic_vehicle_count=vehicle_number, # Set thresholds
-        traffic_spawn_time=0,
-        traffic_stop_spawn_time=20,
-        traffic_vehicle_type="vehicle.tesla.model3", # Fix one vehicle type
-        ego_starting_delay= 5.0,
-        ego_source_edge="-17.0.00",
-        ego_destination_edge="-26.0.00",
-        ego_energy_model="Energy", # Fixing for testing different SUT
+        # Gli NPC sono letti dal file, senza generarne di nuovi.
+        traffic_generation_mode="route_file",
+        traffic_route_file=BOLOGNA_ROUTES,
+        simulation_end=3600,
+        ego_starting_delay=5.0,
+        ego_source_edge="-1204509157#2",
+        ego_destination_edge="150018085#0",
+        ego_energy_model="Energy",
         ego_max_battery_capacity=75000,
         ego_current_battery_charge=650,
         ego_critical_battery_threshold=500,
@@ -33,16 +38,11 @@ for iteration in range(20):
             "frontSurfaceArea": 2.2,
             "mass": 1919,
             "rotatingMass": 80,
-            "propulsionEfficiency": .80,
+            "propulsionEfficiency": 0.80,
             "radialDragCoefficient": 0.1,
-            "recuperationEfficiency": .80,
+            "recuperationEfficiency": 0.80,
             "rollDragCoefficient": 0.01,
             "stoppingThreshold": 0.1,
         },
     )
-    print("Ended CoSim")
-    # print(result)
-
-# traffic_generation_mode="congestion"          # default, source+destination+congestion
-# traffic_generation_mode="random"              # only use congestion edge and vehicle count
-# traffic_generation_mode="random_traffic"
+    print(f"Co-simulazione terminata: {result.completion_reason}")

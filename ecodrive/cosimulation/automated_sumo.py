@@ -82,6 +82,10 @@ class AutomatedSumoSimulation(SumoSimulation):
         self._automated_controlled_speeds = {}
         self._automated_direct_control_vehicles = set()
         super().__init__(*args, **kwargs)
+        try:
+            self._sumo_process = traci.getConnection()._process
+        except (AttributeError, traci.exceptions.TraCIException):
+            self._sumo_process = None
 
     @staticmethod
     def _vehicle_emission_class(veh_id, type_id=None):
@@ -282,6 +286,14 @@ class AutomatedSumoSimulation(SumoSimulation):
 
     def synchronize_vehicle(self, vehicle_id, transform, signals=None):
         """Synchronize CARLA-controlled vehicles while keeping MMPEVEM finite."""
+        # SUMO 1.27 can segfault when moveToXY is called between vehicle.add()
+        # and the simulation step that actually inserts the vehicle.
+        try:
+            if not traci.vehicle.getRoadID(vehicle_id):
+                return True
+        except traci.exceptions.TraCIException:
+            return False
+
         self._release_automated_speed_override(vehicle_id)
         implied_speed, previous_speed = self._sync_motion_estimate(vehicle_id, transform)
         updated = super().synchronize_vehicle(vehicle_id, transform, signals)
@@ -1250,7 +1262,16 @@ class AutomatedSumoSimulation(SumoSimulation):
     def tick(self):
         """Advance the bridge and enforce automated battery-stop rules."""
         with self.traci_lock:
-            super().tick()
+            try:
+                super().tick()
+            except traci.exceptions.FatalTraCIError:
+                return_code = (
+                    self._sumo_process.poll()
+                    if self._sumo_process is not None
+                    else None
+                )
+                logging.error("SUMO process exited during simulationStep: %s", return_code)
+                raise
 
             for veh_id in traci.vehicle.getIDList():
                 type_id = traci.vehicle.getTypeID(veh_id)

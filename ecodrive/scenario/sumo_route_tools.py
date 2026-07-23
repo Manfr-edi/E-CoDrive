@@ -619,6 +619,100 @@ def find_running_autoware_container(name_filter=DEFAULT_AUTOWARE_DOCKER_FILTER):
     return container
 
 
+def carla_lanelet_file(map_name):
+    """Return the Lanelet2 map paired with a custom CARLA OpenDRIVE map."""
+    opendrive_file = carla_opendrive_file(map_name)
+    if opendrive_file is None:
+        return None
+    lanelet_file = opendrive_file.with_suffix(".osm")
+    return lanelet_file if lanelet_file.is_file() else None
+
+
+def ensure_autoware_lanelet_map_available(container_name, map_name):
+    """Copy a custom Lanelet2 map and its projection config into Autoware."""
+    lanelet_file = carla_lanelet_file(map_name)
+    if lanelet_file is None:
+        raise FileNotFoundError(
+            f"Lanelet2 map required by Autoware not found for {map_name!r}. "
+            "Place it next to the OpenDRIVE file using the same base name."
+        )
+
+    docker_binary = shutil.which("docker")
+    map_stem = Path(str(map_name)).stem
+    files = [(lanelet_file, f"{map_stem}.osm")]
+    projection_file = lanelet_file.with_suffix(".yaml")
+    if projection_file.is_file():
+        files.append((projection_file, f"{map_stem}.yaml"))
+
+    copied = []
+    for source, filename in files:
+        destination = f"/opt/catkin_ws/src/autoware_mini/data/maps/{filename}"
+        process = subprocess.run(
+            [
+                docker_binary,
+                "cp",
+                str(source),
+                f"{container_name}:{destination}",
+            ],
+            env=_docker_exec_env(),
+            capture_output=True,
+            text=True,
+        )
+        if process.returncode != 0:
+            raise RuntimeError(
+                "Could not install the Lanelet2 map in Autoware: "
+                f"{process.stderr.strip() or process.stdout.strip()}"
+            )
+        copied.append({"source": str(source), "destination": destination})
+
+    visualization_setup = None
+    if lanelet_file.stat().st_size >= 25 * 1024 * 1024:
+        planning_config = (
+            "/opt/catkin_ws/src/autoware_mini/config/planning.yaml"
+        )
+        patch_script = (
+            "from pathlib import Path; "
+            f"p=Path({planning_config!r}); "
+            "s=p.read_text(); "
+            "old='  use_map_extraction: False'; "
+            "new='  use_map_extraction: True'; "
+            "s=s.replace(old,new,1) if old in s else s; "
+            "s=s.replace('  map_extraction_distance: 500', "
+            "'  map_extraction_distance: 250', 1); "
+            "p.write_text(s); "
+            "print('enabled' if new in p.read_text() else 'unavailable')"
+        )
+        process = subprocess.run(
+            [
+                docker_binary,
+                "exec",
+                str(container_name),
+                "python3",
+                "-c",
+                patch_script,
+            ],
+            env=_docker_exec_env(),
+            capture_output=True,
+            text=True,
+        )
+        if process.returncode != 0:
+            raise RuntimeError(
+                "Could not enable local Lanelet2 visualization for the large map: "
+                f"{process.stderr.strip() or process.stdout.strip()}"
+            )
+        visualization_setup = {
+            "config": planning_config,
+            "map_extraction": process.stdout.strip(),
+        }
+
+    return {
+        "source": str(lanelet_file),
+        "destination": copied[0]["destination"],
+        "files": copied,
+        "visualization": visualization_setup,
+    }
+
+
 def ensure_autoware_blueprint_available(
     container_name,
     blueprint_id=AUTOWARE_EGO_VTYPE,
@@ -1142,6 +1236,373 @@ print("patched" if text != original_text else "unchanged")
 
     return {
         "launch_file": "/opt/catkin_ws/src/autoware_mini/launch/start_carla.launch",
+        "status": process.stdout.strip().splitlines()[-1] if process.stdout.strip() else "unknown",
+    }
+
+
+def _ensure_autoware_bridge_passive_passthrough(container_name):
+    """Ensure start_carla.launch forwards passive mode to the CARLA bridge."""
+    docker_binary = shutil.which("docker")
+    patch_script = r"""
+from pathlib import Path
+
+path = Path("/opt/catkin_ws/src/autoware_mini/launch/start_carla.launch")
+text = path.read_text()
+original_text = text
+
+carla_marker = "    <!-- Carla specific -->"
+before_carla_block = text.split(carla_marker, 1)[0]
+if 'name="passive"' not in before_carla_block:
+    if carla_marker not in text:
+        raise RuntimeError("Could not locate CARLA argument block in start_carla.launch")
+    text = text.replace(
+        carla_marker,
+        '    <arg name="passive"                default="false"                          doc="Let an external client own CARLA ticks"/>\n\n'
+        + carla_marker,
+        1,
+    )
+
+scenario_arg = (
+    '        <arg name="use_scenario_runner"                 '
+    'value="$(arg use_scenario_runner)" />'
+)
+passive_arg = (
+    '        <arg name="passive"                             '
+    'value="$(arg passive)" />'
+)
+if passive_arg not in text:
+    if scenario_arg not in text:
+        raise RuntimeError("Could not locate platform/carla.launch scenario-runner arg")
+    text = text.replace(scenario_arg, scenario_arg + "\n" + passive_arg, 1)
+
+if text != original_text:
+    path.write_text(text)
+
+print("patched" if text != original_text else "unchanged")
+""".strip()
+    process = subprocess.run(
+        [
+            docker_binary,
+            "exec",
+            str(container_name),
+            "python3",
+            "-c",
+            patch_script,
+        ],
+        env=_docker_exec_env(),
+        capture_output=True,
+        text=True,
+    )
+    if process.returncode != 0:
+        details = " | ".join(
+            part
+            for part in (process.stderr.strip(), process.stdout.strip())
+            if part
+        )
+        raise RuntimeError(
+            "Could not patch Autoware start_carla.launch to pass passive mode: "
+            f"{details or 'unknown error'}"
+        )
+
+    return {
+        "launch_file": "/opt/catkin_ws/src/autoware_mini/launch/start_carla.launch",
+        "status": process.stdout.strip().splitlines()[-1] if process.stdout.strip() else "unknown",
+    }
+
+
+def _ensure_autoware_passive_bridge_tick_pump(container_name):
+    """Make the passive ROS bridge consume externally generated CARLA ticks."""
+    docker_binary = shutil.which("docker")
+    patch_script = r'''
+from pathlib import Path
+
+path = Path("/opt/catkin_ws/src/carla_ros_bridge/carla_ros_bridge/src/carla_ros_bridge/bridge.py")
+text = path.read_text()
+original_text = text
+
+thread_marker = "        self.synchronous_mode_update_thread = None\n"
+thread_replacement = (
+    thread_marker
+    + "        self.passive_mode_update_thread = None\n"
+)
+if "self.passive_mode_update_thread = None" not in text:
+    if thread_marker not in text:
+        raise RuntimeError("Could not locate ROS bridge update-thread initialization")
+    text = text.replace(thread_marker, thread_replacement, 1)
+
+start_marker = """            self.actor_factory.start()
+
+            # register callback to update actors
+            self.on_tick_id = self.carla_world.on_tick(self._carla_time_tick)
+"""
+start_replacement = """            self.actor_factory.start()
+
+            # CARLA 0.9.13 may not dispatch on_tick callbacks reliably when a
+            # different synchronous client owns world.tick().  In passive mode,
+            # consume the server snapshots explicitly instead.
+            self.on_tick_id = None
+            if self.parameters["passive"] and self.carla_settings.synchronous_mode:
+                self.passive_mode_update_thread = Thread(
+                    target=self._passive_mode_update)
+                self.passive_mode_update_thread.start()
+            else:
+                self.on_tick_id = self.carla_world.on_tick(self._carla_time_tick)
+"""
+if "target=self._passive_mode_update" not in text:
+    if start_marker not in text:
+        raise RuntimeError("Could not locate ROS bridge asynchronous update setup")
+    text = text.replace(start_marker, start_replacement, 1)
+
+callback_marker = "    def _carla_time_tick(self, carla_snapshot):\n"
+callback_replacement = """    def _passive_mode_update(self):
+        while not self.shutdown.is_set():
+            carla_snapshot = self.carla_world.wait_for_tick(1.0)
+            if carla_snapshot is not None:
+                self._carla_time_tick(carla_snapshot)
+
+""" + callback_marker
+if "def _passive_mode_update(self):" not in text:
+    if callback_marker not in text:
+        raise RuntimeError("Could not locate ROS bridge CARLA tick callback")
+    text = text.replace(callback_marker, callback_replacement, 1)
+
+destroy_marker = """        if not self.sync_mode:
+            if self.on_tick_id:
+                self.carla_world.remove_on_tick(self.on_tick_id)
+            self.actor_factory.thread.join()
+"""
+destroy_replacement = """        if not self.sync_mode:
+            if self.on_tick_id:
+                self.carla_world.remove_on_tick(self.on_tick_id)
+            if self.passive_mode_update_thread:
+                self.passive_mode_update_thread.join()
+            self.actor_factory.thread.join()
+"""
+if "if self.passive_mode_update_thread:" not in text:
+    if destroy_marker not in text:
+        raise RuntimeError("Could not locate ROS bridge shutdown logic")
+    text = text.replace(destroy_marker, destroy_replacement, 1)
+
+if text != original_text:
+    path.write_text(text)
+
+actor_factory_path = Path(
+    "/opt/catkin_ws/src/carla_ros_bridge/carla_ros_bridge/"
+    "src/carla_ros_bridge/actor_factory.py"
+)
+actor_factory_text = actor_factory_path.read_text()
+actor_factory_original = actor_factory_text
+factory_marker = """            self.world.wait_for_tick()
+            self.update_available_objects()
+"""
+factory_replacement = """            carla_snapshot = self.world.wait_for_tick()
+            if self.node.parameters["passive"] and self.node.carla_settings.synchronous_mode:
+                self.node._carla_time_tick(carla_snapshot)
+            self.update_available_objects()
+"""
+if "self.node._carla_time_tick(carla_snapshot)" not in actor_factory_text:
+    if factory_marker not in actor_factory_text:
+        raise RuntimeError("Could not locate ROS bridge actor-factory tick loop")
+    actor_factory_text = actor_factory_text.replace(
+        factory_marker,
+        factory_replacement,
+        1,
+    )
+    actor_factory_path.write_text(actor_factory_text)
+
+print(
+    "patched"
+    if text != original_text or actor_factory_text != actor_factory_original
+    else "unchanged"
+)
+'''.strip()
+    process = subprocess.run(
+        [
+            docker_binary,
+            "exec",
+            str(container_name),
+            "python3",
+            "-c",
+            patch_script,
+        ],
+        env=_docker_exec_env(),
+        capture_output=True,
+        text=True,
+    )
+    if process.returncode != 0:
+        details = " | ".join(
+            part
+            for part in (process.stderr.strip(), process.stdout.strip())
+            if part
+        )
+        raise RuntimeError(
+            "Could not patch the passive CARLA ROS bridge tick handling: "
+            f"{details or 'unknown error'}"
+        )
+
+    return {
+        "bridge_file": (
+            "/opt/catkin_ws/src/carla_ros_bridge/carla_ros_bridge/"
+            "src/carla_ros_bridge/bridge.py"
+        ),
+        "status": process.stdout.strip().splitlines()[-1] if process.stdout.strip() else "unknown",
+    }
+
+
+def _ensure_autoware_namespaced_ego_localizer_frame(container_name):
+    """Match carla_localizer to the namespaced ego frame from the ROS bridge."""
+    docker_binary = shutil.which("docker")
+    patch_script = r"""
+from pathlib import Path
+
+path = Path(
+    "/opt/catkin_ws/src/autoware_mini/nodes/platform/carla/"
+    "carla_localizer.py"
+)
+text = path.read_text()
+original_text = text
+old = 'lookup_transform("ego_vehicle", "base_link"'
+new = 'lookup_transform("ego_vehicle/base_link", "base_link"'
+if new not in text:
+    if old not in text:
+        raise RuntimeError("Could not locate carla_localizer ego-frame lookup")
+    text = text.replace(old, new, 1)
+    path.write_text(text)
+
+print("patched" if text != original_text else "unchanged")
+""".strip()
+    process = subprocess.run(
+        [
+            docker_binary,
+            "exec",
+            str(container_name),
+            "python3",
+            "-c",
+            patch_script,
+        ],
+        env=_docker_exec_env(),
+        capture_output=True,
+        text=True,
+    )
+    if process.returncode != 0:
+        details = " | ".join(
+            part
+            for part in (process.stderr.strip(), process.stdout.strip())
+            if part
+        )
+        raise RuntimeError(
+            "Could not configure carla_localizer for the namespaced ego frame: "
+            f"{details or 'unknown error'}"
+        )
+
+    return {
+        "localizer_file": (
+            "/opt/catkin_ws/src/autoware_mini/nodes/platform/carla/"
+            "carla_localizer.py"
+        ),
+        "status": process.stdout.strip().splitlines()[-1] if process.stdout.strip() else "unknown",
+    }
+
+
+def _ensure_autoware_multipolygon_visualization(container_name):
+    """Avoid Lanelet2 marker crashes on self-intersecting centerlines."""
+    docker_binary = shutil.which("docker")
+    patch_script = r"""
+from pathlib import Path
+
+path = Path(
+    "/opt/catkin_ws/src/autoware_mini/src/autoware_mini/"
+    "visualization.py"
+)
+text = path.read_text()
+original_text = text
+old = '    buffer = linestring.buffer(width / 2, cap_style="flat")\n'
+new = (
+    old
+    + '    if buffer.geom_type == "MultiPolygon":\n'
+    + '        buffer = max(buffer.geoms, key=lambda geometry: geometry.area)\n'
+)
+if 'if buffer.geom_type == "MultiPolygon":' not in text:
+    if old not in text:
+        raise RuntimeError("Could not locate Lanelet2 line-buffer triangulation")
+    text = text.replace(old, new, 1)
+    path.write_text(text)
+
+visualizer_path = Path(
+    "/opt/catkin_ws/src/autoware_mini/nodes/planning/global/lanelet2/"
+    "lanelet2_map_visualizer.py"
+)
+visualizer_text = visualizer_path.read_text()
+visualizer_original = visualizer_text
+unsafe_type_check = '                    if line.attributes["type"] == "stop_line":'
+safe_type_check = (
+    '                    if "type" in line.attributes '
+    'and line.attributes["type"] == "stop_line":'
+)
+if safe_type_check not in visualizer_text:
+    if unsafe_type_check not in visualizer_text:
+        raise RuntimeError("Could not locate Lanelet2 linestring type check")
+    visualizer_text = visualizer_text.replace(
+        unsafe_type_check,
+        safe_type_check,
+        1,
+    )
+    visualizer_path.write_text(visualizer_text)
+
+filled_road_marker = (
+    '                    centerline_points.extend('
+    'triangulate_path(centerline, 1.5))'
+)
+lightweight_road_marker = (
+    '                    if not self.use_map_extraction:\n'
+    '                        centerline_points.extend('
+    'triangulate_path(centerline, 1.5))'
+)
+if lightweight_road_marker not in visualizer_text:
+    if filled_road_marker not in visualizer_text:
+        raise RuntimeError("Could not locate Lanelet2 filled-road visualization")
+    visualizer_text = visualizer_text.replace(
+        filled_road_marker,
+        lightweight_road_marker,
+        1,
+    )
+    visualizer_path.write_text(visualizer_text)
+
+print(
+    "patched"
+    if text != original_text or visualizer_text != visualizer_original
+    else "unchanged"
+)
+""".strip()
+    process = subprocess.run(
+        [
+            docker_binary,
+            "exec",
+            str(container_name),
+            "python3",
+            "-c",
+            patch_script,
+        ],
+        env=_docker_exec_env(),
+        capture_output=True,
+        text=True,
+    )
+    if process.returncode != 0:
+        details = " | ".join(
+            part
+            for part in (process.stderr.strip(), process.stdout.strip())
+            if part
+        )
+        raise RuntimeError(
+            "Could not make Lanelet2 visualization handle MultiPolygon buffers: "
+            f"{details or 'unknown error'}"
+        )
+
+    return {
+        "visualization_file": (
+            "/opt/catkin_ws/src/autoware_mini/src/autoware_mini/"
+            "visualization.py"
+        ),
         "status": process.stdout.strip().splitlines()[-1] if process.stdout.strip() else "unknown",
     }
 
@@ -2076,7 +2537,16 @@ def launch_autoware_carla_in_container(
     )
     container_name = container.get("Names") or container.get("ID")
     docker_binary = shutil.which("docker")
+    lanelet_map_setup = None
+    if carla_opendrive_file(map_name) is not None:
+        lanelet_map_setup = ensure_autoware_lanelet_map_available(
+            container_name,
+            map_name,
+        )
     ensure_autoware_blueprint_available(container_name)
+    multipolygon_visualization_setup = _ensure_autoware_multipolygon_visualization(
+        container_name
+    )
     dynamic_speed_limit_setup = _ensure_autoware_dynamic_speed_limit(container_name)
     speed_display_setup = _ensure_autoware_speed_display_uses_mps(container_name)
     traffic_light_mode = str(
@@ -2097,6 +2567,19 @@ def launch_autoware_carla_in_container(
     spawn_point_passthrough = None
     if spawn_point_data is not None:
         spawn_point_passthrough = _ensure_autoware_spawn_point_passthrough(container_name)
+    bridge_passive_passthrough = None
+    bridge_passive_tick_pump = None
+    ego_localizer_frame_setup = None
+    if carla_bridge_passive:
+        bridge_passive_passthrough = _ensure_autoware_bridge_passive_passthrough(
+            container_name
+        )
+        bridge_passive_tick_pump = _ensure_autoware_passive_bridge_tick_pump(
+            container_name
+        )
+        ego_localizer_frame_setup = _ensure_autoware_namespaced_ego_localizer_frame(
+            container_name
+        )
     speed_limit_value = None
     launch_speed_limit_passthrough = None
     planner_speed_limit_setup = None
@@ -2226,6 +2709,9 @@ def launch_autoware_carla_in_container(
         "command": command,
         "launch_probe": launch_probe,
         "carla_bridge_passive": bool(carla_bridge_passive),
+        "bridge_passive_passthrough": bridge_passive_passthrough,
+        "bridge_passive_tick_pump": bridge_passive_tick_pump,
+        "ego_localizer_frame_setup": ego_localizer_frame_setup,
         "route_deferred": bool(route_requested and not publish_route),
         "spawn_edge": resolved_spawn_edge or None,
         "spawn_point": (
@@ -2263,6 +2749,8 @@ def launch_autoware_carla_in_container(
         "runtime_speed_limit_setup": runtime_speed_limit_setup,
         "speed_display_setup": speed_display_setup,
         "traffic_light_setup": traffic_light_setup,
+        "lanelet_map_setup": lanelet_map_setup,
+        "multipolygon_visualization_setup": multipolygon_visualization_setup,
         "dynamic_speed_limit_setup": dynamic_speed_limit_setup,
         "initial_pose": initial_pose,
         "goal_pose": goal_pose,
@@ -3123,8 +3611,25 @@ def _sumo_heading_from_vector(dx, dy):
 
 def _autoware_map_xy_from_sumo_point(map_name, sumo_x, sumo_y):
     """Convert a SUMO point into the Autoware map coordinate frame."""
-    offset_x, offset_y = _net_location_offset(map_name)
-    return sumo_x - offset_x, sumo_y - offset_y
+    net_offset_x, net_offset_y = _net_location_offset(map_name)
+    map_x = sumo_x - net_offset_x
+    map_y = sumo_y - net_offset_y
+
+    # Custom OpenDRIVE maps can carry a geospatial offset while their road
+    # geometry remains in a local frame. Autoware and CARLA need that local
+    # frame, not the absolute UTM coordinates reconstructed from SUMO.
+    opendrive_file = carla_opendrive_file(map_name)
+    if opendrive_file is not None:
+        try:
+            header = ET.parse(opendrive_file).getroot().find("header")
+            opendrive_offset = header.find("offset") if header is not None else None
+            if opendrive_offset is not None:
+                map_x -= float(opendrive_offset.get("x", "0.0"))
+                map_y -= float(opendrive_offset.get("y", "0.0"))
+        except (ET.ParseError, TypeError, ValueError):
+            pass
+
+    return map_x, map_y
 
 
 def _fallback_autoware_pose_from_edge(edge, map_name, edge_position="start", z_value=0.0):
@@ -3552,6 +4057,57 @@ def _count_route_vehicles(route_file, target_edge=None):
                 target_count += 1
 
     return len(vehicles), target_count
+
+
+def _count_route_demand(route_file):
+    """Count explicit vehicles and fixed-size flows in an existing route file."""
+    root = ET.parse(route_file).getroot()
+    count = len(root.findall("vehicle")) + len(root.findall("trip"))
+    for flow in root.findall("flow"):
+        try:
+            count += int(flow.get("number", "1"))
+        except ValueError:
+            count += 1
+    return count
+
+
+def use_existing_routes_scenario(
+    map_name=DEFAULT_MAP,
+    route_file=None,
+    simulation_end=None,
+):
+    """Build a co-simulation scenario without modifying an existing route file."""
+    route_file = Path(route_file).expanduser().resolve()
+    if not route_file.is_file():
+        raise FileNotFoundError(f"SUMO route file not found: {route_file}")
+    if ET.parse(route_file).getroot().tag != "routes":
+        raise ValueError(f"Not a SUMO routes file: {route_file}")
+
+    sumocfg_file = map_sumocfg_file(map_name)
+    _write_sumocfg(
+        map_name,
+        route_file,
+        sumocfg_file,
+        simulation_end=simulation_end,
+    )
+    vehicle_count = _count_route_demand(route_file)
+    return ScenarioResult(
+        map_name=map_name,
+        target_edge="",
+        route_file=route_file,
+        trip_file=route_file,
+        sumocfg_file=sumocfg_file,
+        command=build_run_command(sumocfg_file),
+        generated_count=vehicle_count,
+        requested_count=vehicle_count,
+        target_count=0,
+        mode="existing route file",
+        stdout="",
+        stderr="",
+        spawn_begin=0.0,
+        spawn_end=float(simulation_end or 0.0),
+        simulation_end=float(simulation_end or 0.0),
+    )
 
 
 def _trim_route_file(route_file, max_vehicles):
@@ -4134,17 +4690,58 @@ def wait_for_carla_server(
     )
 
 
+def carla_opendrive_file(map_name):
+    """Return a custom OpenDRIVE map file, when one is installed."""
+    map_path = Path(str(map_name))
+    if map_path.suffix.lower() == ".xodr":
+        candidates = (map_path,)
+    else:
+        maps_dir = CARLA_DIR / "CarlaUE4" / "Content" / "Carla" / "Maps"
+        cooked_candidates = (
+            maps_dir / f"{map_name}.umap",
+            maps_dir / str(map_name) / f"{map_name}.umap",
+        )
+        if any(candidate.is_file() for candidate in cooked_candidates):
+            return None
+        candidates = (
+            maps_dir / "OpenDrive" / f"{map_name}.xodr",
+            CARLA_DIR / "PythonAPI" / "util" / f"{map_name}.xodr",
+        )
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
 def load_carla_map(map_name, log_file=None, no_rendering=True):
     """Load the selected CARLA map on the running server."""
     if log_file is None:
         log_file = OUTPUT_DIR / "carla_map.log"
-    if not CARLA_CONFIG_SCRIPT.exists():
-        raise FileNotFoundError(f"CARLA map config not found: {CARLA_CONFIG_SCRIPT}")
 
     python_executable = resolve_carla_python_executable()
-    cmd = [str(python_executable), "PythonAPI/util/config.py", "--map", map_name]
+    opendrive_file = carla_opendrive_file(map_name)
+    if opendrive_file is not None:
+        cmd = [
+            str(python_executable),
+            "PythonAPI/util/config.py",
+            "--xodr-path",
+            str(opendrive_file),
+        ]
+    else:
+        if not CARLA_CONFIG_SCRIPT.exists():
+            raise FileNotFoundError(
+                f"CARLA map config not found: {CARLA_CONFIG_SCRIPT}"
+            )
+        cmd = [
+            str(python_executable),
+            "PythonAPI/util/config.py",
+            "--map",
+            str(map_name),
+        ]
     if no_rendering:
         cmd.append("--no-rendering")
+
     process = subprocess.run(
         cmd,
         cwd=str(CARLA_DIR),

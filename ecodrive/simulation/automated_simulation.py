@@ -117,6 +117,7 @@ def simulate(
     traffic_random_vehicle_type: bool = False,
     traffic_random_vehicle_cars_only: bool = False,
     traffic_generation_mode: str = "congestion",
+    traffic_route_file: Optional[Path] = None,
     ego_starting_delay: float = 0.0,
     ego_source_edge: str,
     ego_destination_edge: str,
@@ -277,6 +278,7 @@ def simulate(
         vehicle_type=selected_vehicle_type,
         random_vehicle_type=random_vehicle_type,
         vehicle_types=vehicle_types,
+        route_file=traffic_route_file,
     )
     progress_log.log(
         "scenario",
@@ -326,6 +328,9 @@ def simulate(
                 sumo_gui=not headless,
                 output_dir=output_dir,
                 traffic_light_handling_mode=resolved_traffic_light_mode,
+                local_map_coordinates=(
+                    route_tools.carla_opendrive_file(town) is not None
+                ),
                 progress_log=progress_log,
             )
             _wait_for_sync_ready(sync_launch, timeout=float(carla_timeout))
@@ -345,7 +350,11 @@ def simulate(
                 start_edge=ego_source_edge,
                 goal_edge=ego_destination_edge,
                 speed_limit_kmh=autoware_speed_limit_kmh,
-                carla_bridge_passive=False,
+                # The synchronization runner owns CARLA ticks. A second active
+                # bridge would also try to reload/tick a generated OpenDRIVE world.
+                carla_bridge_passive=(
+                    route_tools.carla_opendrive_file(town) is not None
+                ),
                 publish_route=False,
                 traffic_light_handling_mode=resolved_traffic_light_mode,
             )
@@ -744,9 +753,16 @@ def _normalize_traffic_generation_mode(mode: str) -> str:
         "whole_map_random",
     }:
         return "random_traffic"
+    if value in {
+        "route_file",
+        "routes_file",
+        "existing_routes",
+        "predefined_traffic",
+    }:
+        return "route_file"
     raise ValueError(
         "traffic_generation_mode must be one of: 'congestion', "
-        "'random_congestion'/'random', or 'random_traffic'."
+        "'random_congestion'/'random', 'random_traffic', or 'route_file'."
     )
 
 
@@ -756,7 +772,7 @@ def _traffic_edges_to_validate(
     source_edge: Optional[str],
     destination_edge: Optional[str],
 ) -> Tuple[Optional[str], ...]:
-    if generation_mode == "random_traffic":
+    if generation_mode in {"random_traffic", "route_file"}:
         return ()
     if generation_mode == "random_congestion":
         return (congestion_edge,)
@@ -780,7 +796,27 @@ def _generate_traffic_scenario(
     vehicle_type: str,
     random_vehicle_type: bool,
     vehicle_types: Sequence[str],
+    route_file: Optional[Path],
 ) -> Tuple[Any, Dict[str, Any]]:
+    if generation_mode == "route_file":
+        if route_file is None:
+            raise ValueError(
+                "traffic_route_file is required when "
+                "traffic_generation_mode='route_file'."
+            )
+        scenario = route_tools.use_existing_routes_scenario(
+            map_name=town,
+            route_file=route_file,
+            simulation_end=simulation_end,
+        )
+        return scenario, {
+            "generation_mode": generation_mode,
+            "source_edge": None,
+            "destination_edge": None,
+            "congestion_edge": None,
+            "spawn_pattern": None,
+        }
+
     if generation_mode == "random_traffic":
         scenario = route_tools.generate_random_trips_scenario(
             map_name=town,
@@ -1161,11 +1197,16 @@ raise RuntimeError(
 )
 """.strip()
     env = route_tools._build_env()  # pylint: disable=protected-access
+    expected_map = (
+        "OpenDriveMap"
+        if route_tools.carla_opendrive_file(town) is not None
+        else str(town)
+    )
     env.update(
         {
             "ECODRIVE_CARLA_HOST": route_tools.DEFAULT_CARLA_HOST,
             "ECODRIVE_CARLA_PORT": str(route_tools.DEFAULT_CARLA_PORT),
-            "ECODRIVE_CARLA_TOWN": str(town),
+            "ECODRIVE_CARLA_TOWN": expected_map,
             "ECODRIVE_CARLA_READY_TIMEOUT": str(float(timeout)),
             "ECODRIVE_CARLA_RPC_TIMEOUT": str(float(rpc_timeout)),
         }
@@ -1203,6 +1244,7 @@ def _start_automated_synchronization(
     sumo_gui: bool,
     output_dir: Path,
     traffic_light_handling_mode: str,
+    local_map_coordinates: bool = False,
     progress_log: Optional[_ProgressLogger] = None,
 ) -> AutomatedSynchronizationLaunch:
     """Start the automated-only synchronization runner in gated mode."""
@@ -1243,6 +1285,8 @@ def _start_automated_synchronization(
         command.append("--force-traffic-lights-yellow")
     if sumo_gui:
         command.append("--sumo-gui")
+    if local_map_coordinates:
+        command.append("--local-map-coordinates")
 
     if progress_log is not None:
         progress_log.log(

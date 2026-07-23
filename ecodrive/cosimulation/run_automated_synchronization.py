@@ -221,6 +221,12 @@ def synchronization_loop(args):
             args.sync_vehicle_color,
             args.sync_vehicle_lights,
         )
+        if args.local_map_coordinates:
+            BridgeHelper.offset = (0.0, 0.0)
+            logging.info(
+                "Using the shared local CARLA/SUMO coordinate frame "
+                "(SUMO netOffset ignored by the bridge)."
+            )
         logging.info("SUMO/CARLA synchronization ready; entering tick loop.")
 
         if not args.no_api:
@@ -313,6 +319,11 @@ def build_argparser():
     argparser.add_argument("--no-api", action="store_true")
     argparser.add_argument("--wait-start-file", type=str, default=None)
     argparser.add_argument("--wait-ready-file", type=str, default=None)
+    argparser.add_argument(
+        "--local-map-coordinates",
+        action="store_true",
+        help="Treat CARLA OpenDRIVE and SUMO geometry as the same local XY frame.",
+    )
     argparser.add_argument("--debug", action="store_true")
     return argparser
 
