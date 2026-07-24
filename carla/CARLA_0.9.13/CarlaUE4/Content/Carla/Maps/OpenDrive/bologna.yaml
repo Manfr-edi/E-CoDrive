@@ -1,0 +1,6 @@
+# bologna.osm was exported from the local OpenDRIVE coordinate system.
+# Its node coordinates are synthetic UTM coordinates close to the equator,
+# not WGS84 coordinates around Bologna.  This origin restores the same local
+# frame used by CARLA and SUMO (metres).
+utm_origin_lat: 0.0
+utm_origin_lon: 4.51627643959947
